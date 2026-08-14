@@ -1,0 +1,85 @@
+# ===== 敏感信息 =====
+.env
+.env.local
+.env.*.local
+.env.dev
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+ENV/
+env/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===== 数据库与日志 =====
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+# 根目录残留 db（早期路径遗留，不应入库）
+/ai_collector.db
+*.db-journal
+*.db-shm
+*.db-wal
+logs/
+*.log
+
+# ===== Playwright 浏览器缓存 =====
+ms-playwright/
+
+# ===== 测试与缓存 =====
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ===== 临时文件 =====
+*.tmp
+*.bak
+
+# 向量数据库（运行时生成，不入版本控制）
+data/vector.db/
+data/vector.db
+data/vector.faiss
+data/vector.pkl
+
+# ===== WorkBuddy 工作区记忆（含个人笔记，不入库） =====
+.workbuddy/
+
+# ===== data/ 运行时临时产物 =====
+data/_tmp_struct.json
+data/boss_checkpoint.json
+data/boss_*_sample.json
+data/*_srv.err
+data/*_srv.out
+data/*.err
+data/*.log

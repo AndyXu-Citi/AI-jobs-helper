@@ -1,0 +1,44 @@
+# ===== Web 与 HTML 处理 =====
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+markdownify>=0.11.6
+
+# ===== Web API（FastAPI 服务 /api/chat、/api/jobs、/api/report、/api/match 等）=====
+# 注意：此前漏列 fastapi，导致 src/web/app.py 无法直接 pip install -r 装出。run 时需额外安装。
+fastapi>=0.110.0
+uvicorn[standard]>=0.30.0
+
+# ===== 浏览器自动化 =====
+playwright>=1.40.0
+playwright-stealth>=2.0.0
+
+# ===== LLM 调用 =====
+openai>=1.30.0
+
+# ===== 工具 =====
+python-dotenv>=1.0.0
+pandas>=2.0.0
+
+# ===== RAG: 向量检索 =====
+# FAISS 本地向量索引（替代 Milvus Lite：Windows 上 Milvus gRPC 有兼容问题）
+faiss-cpu>=1.7.4
+numpy>=1.24.0
+
+# ===== RAG: HuggingFace bge-m3 向量化（本地 embedding 后端，替代 Ollama）=====
+# 与 OllamaEmbedder 二选一；本项目当前默认走 HuggingFaceEmbedder（均在 src/rag/embedder.py）
+sentence-transformers>=2.3.0
+
+# ===== v3.1 MCP Server =====
+# 锁 1.26.x：兼容 Hermes 当前内置 MCP 客户端；避免新版本拉高 starlette 破坏 fastapi 依赖
+mcp==1.26.0
+
+# ===== MySQL 数据库（替代 SQLite）=====
+# 使用前需确保 MySQL 服务已运行，并在 .env 中配置 DB_HOST/DB_USER/DB_PASSWORD/DB_NAME
+mysql-connector-python>=9.0.0
+
+# ===== v3.0 Agent: LangGraph 编排 =====
+langgraph>=1.0.0
+langchain>=1.0.0
+langchain-openai>=1.0.0
+langchain-community>=0.4.0
+pyyaml>=6.0
