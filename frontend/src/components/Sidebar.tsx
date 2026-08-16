@@ -1,6 +1,16 @@
 import { useConversationStore, useChatStore } from '../stores';
 import type { ChatMode, InterviewSubMode } from '../types';
 
+const S = (p: { size?: number; className?: string }) => ({
+  width: p.size ?? 16, height: p.size ?? 16, className: p.className, viewBox: '0 0 24 24',
+  fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
+});
+const IconPlus = (p: { size?: number; className?: string }) => (<svg {...S(p)}><path d="M12 5v14M5 12h14" /></svg>);
+const IconClose = (p: { size?: number; className?: string }) => (<svg {...S(p)}><path d="M6 6l12 12M18 6 6 18" /></svg>);
+const IconChat = (p: { size?: number; className?: string }) => (<svg {...S(p)}><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12Z" /></svg>);
+const IconAssistant = (p: { size?: number; className?: string }) => (<svg {...S(p)}><path d="M12 3a6 6 0 0 1 4.5 10v3.5a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 7.5 16.5V13A6 6 0 0 1 12 3Z" /><circle cx="9.5" cy="11" r="1" /><circle cx="14.5" cy="11" r="1" /></svg>);
+const IconInterviewer = (p: { size?: number; className?: string }) => (<svg {...S(p)}><circle cx="12" cy="8" r="3.4" /><path d="M5.5 20a6.5 6.5 0 0 1 13 0" /></svg>);
+
 interface SidebarProps {
   onNewChat: () => void;
 }
@@ -18,9 +28,9 @@ export function Sidebar({ onNewChat }: SidebarProps) {
       <div className="p-3 border-b border-border-light">
         <button
           onClick={onNewChat}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-dashed border-brand-300 text-sm font-medium text-brand-600 hover:bg-brand-50 transition-colors"
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-dashed border-indigo-300 text-sm font-medium text-indigo-600 hover:bg-indigo-50 transition-colors"
         >
-          <span className="text-base">⊕</span>
+          <IconPlus size={16} />
           开启新对话
         </button>
       </div>
@@ -47,7 +57,7 @@ export function Sidebar({ onNewChat }: SidebarProps) {
         ))}
         {conversations.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 text-text-muted">
-            <div className="text-3xl mb-2">💬</div>
+            <div className="mb-2 text-stone-300"><IconChat size={30} /></div>
             <div className="text-xs">还没有对话记录</div>
             <div className="text-xs mt-1">点击上方开始新对话</div>
           </div>
@@ -78,7 +88,7 @@ function ConversationItem({
   onClick: () => void;
   onDelete: (e: React.MouseEvent) => void;
 }) {
-  const modeIcon = conv.mode === 'assistant' ? '🤖' : '👨‍💼';
+  const modeIcon = conv.mode === 'assistant' ? <IconAssistant size={15} /> : <IconInterviewer size={15} />;
   const timeLabel = formatTime(conv.updatedAt);
 
   return (
@@ -86,11 +96,11 @@ function ConversationItem({
       onClick={onClick}
       className={`group relative flex items-start gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
         active
-          ? 'bg-brand-50 text-brand-800'
+          ? 'bg-indigo-50 text-indigo-800'
           : 'hover:bg-surface-1 text-text-primary'
       }`}
     >
-      <span className="mt-0.5 text-sm flex-shrink-0">{modeIcon}</span>
+      <span className="mt-0.5 flex-shrink-0 text-stone-400">{modeIcon}</span>
       <div className="flex-1 min-w-0">
         <div className={`text-sm truncate ${active ? 'font-medium' : ''}`}>{conv.title}</div>
         <div className="flex items-center gap-2 mt-0.5">
@@ -106,7 +116,7 @@ function ConversationItem({
         className="opacity-0 group-hover:opacity-100 absolute right-1.5 top-1.5 w-6 h-6 rounded flex items-center justify-center text-text-muted hover:text-red-500 hover:bg-red-50 transition-all text-xs"
         title="删除对话"
       >
-        ✕
+        <IconClose size={13} />
       </button>
     </div>
   );
