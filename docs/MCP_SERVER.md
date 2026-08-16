@@ -1,6 +1,6 @@
-# ai_collector MCP Server 使用说明
+# AI-jobs-helper MCP Server 使用说明
 
-> v3.1 Phase 1：把 ai_collector 的核心检索能力暴露成 MCP Tool，
+> v3.1 Phase 1：把 AI-jobs-helper 的核心检索能力暴露成 MCP Tool，
 > 让 Claude Desktop / Cursor / Hermes Agent 等 MCP 客户端直接调用。
 
 ## 1. 当前能力
@@ -186,7 +186,7 @@ Milvus Lite 第一次启动需要 ~3 秒拉服务进程。后续调用同一个 
 ### 4.1 直接函数调用（最快）
 
 ```bash
-cd /Users/minjie/shangguigu/ai_collector_project
+cd /Users/minjie/shangguigu/AI-jobs-helper
 /Users/minjie/shangguigu/.venv/bin/python - <<'PY'
 import json
 from src.mcp_server.ai_collector_mcp import search_jobs, query_rag, get_skill_gap
@@ -205,7 +205,7 @@ PY
 ### 4.2 MCP stdio Client 调用（端到端）
 
 ```bash
-cd /Users/minjie/shangguigu/ai_collector_project
+cd /Users/minjie/shangguigu/AI-jobs-helper
 /Users/minjie/shangguigu/.venv/bin/python - <<'PY'
 import asyncio, json
 from pathlib import Path
@@ -245,10 +245,10 @@ PY
 
 ```yaml
 mcp_servers:
-  ai_collector:
+  AI-jobs-helper:
     command: "/Users/minjie/shangguigu/.venv/bin/python"
     args:
-      - "/Users/minjie/shangguigu/ai_collector_project/src/mcp_server/ai_collector_mcp.py"
+      - "/Users/minjie/shangguigu/AI-jobs-helper/src/mcp_server/ai_collector_mcp.py"
     timeout: 60
     connect_timeout: 30
 ```
@@ -285,7 +285,7 @@ mcp_ai_collector_get_skill_gap
     "ai-collector": {
       "command": "/Users/minjie/shangguigu/.venv/bin/python",
       "args": [
-        "/Users/minjie/shangguigu/ai_collector_project/src/mcp_server/ai_collector_mcp.py"
+        "/Users/minjie/shangguigu/AI-jobs-helper/src/mcp_server/ai_collector_mcp.py"
       ]
     }
   }

@@ -32,6 +32,11 @@ venv/
 ENV/
 env/
 
+# ===== Node / 前端依赖 =====
+node_modules/
+frontend/dist/
+frontend/node_modules/
+
 # ===== IDE =====
 .vscode/
 .idea/
@@ -41,10 +46,8 @@ env/
 .DS_Store
 
 # ===== 数据库与日志 =====
-data/*.db
-data/*.db-journal
-data/*.db-shm
-data/*.db-wal
+# 任意层级 data/ 目录整体忽略（backend/data 等运行时产物）
+**/data/
 # 根目录残留 db（早期路径遗留，不应入库）
 /ai_collector.db
 *.db-journal
@@ -58,6 +61,8 @@ ms-playwright/
 
 # ===== 测试与缓存 =====
 .pytest_cache/
+.pytest_*/
+.pt_*/
 .coverage
 htmlcov/
 .tox/
@@ -65,21 +70,15 @@ htmlcov/
 # ===== 临时文件 =====
 *.tmp
 *.bak
-
-# 向量数据库（运行时生成，不入版本控制）
-data/vector.db/
-data/vector.db
-data/vector.faiss
-data/vector.pkl
+*.faiss
+*.pkl
 
 # ===== WorkBuddy 工作区记忆（含个人笔记，不入库） =====
 .workbuddy/
 
-# ===== data/ 运行时临时产物 =====
-data/_tmp_struct.json
-data/boss_checkpoint.json
-data/boss_*_sample.json
-data/*_srv.err
-data/*_srv.out
-data/*.err
-data/*.log
+# ===== data/ 运行时临时产物（任意层级，见上方 **/data/） =====
+
+# ===== 凭证文件（绝不上库） =====
+token.txt
+*.token
+

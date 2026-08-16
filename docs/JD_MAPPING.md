@@ -89,9 +89,9 @@
 
 | JD 原文 | 我的证据 | 话术 | 状态 |
 |---|---|---|---|
-| "**基于 MCP 将业务 API 封装为标准化工具供智能体调用**" | 我自己写了一个 MCP server！3 个 Tool 全跑通 | 这是这个岗位**最纯正的 MCP 用法**，直接给 GitHub demo 链接：`github.com/nakajimamiyuki/ai_collector_project`，让 HR 当场看代码 | ✅ **杀手锏** |
+| "**基于 MCP 将业务 API 封装为标准化工具供智能体调用**" | 我自己写了一个 MCP server！3 个 Tool 全跑通 | 这是这个岗位**最纯正的 MCP 用法**，直接给 GitHub demo 链接：`github.com/AndyXu-Citi/AI-jobs-helper`，让 HR 当场看代码 | ✅ **杀手锏** |
 | "Prompt 模板中心 + 按领域版本化" | `src/agent/prompts.py` git 版本化 | "我现在按节点分文件管 Prompt，git 走版本控制；财税这种多领域场景可以做 SQLite + UI 的 prompt registry，按 domain/version/ab_group 三维索引" | 🟡 没做中心化但讲得出来 |
-| "落地 RAG：法规库 / 企业知识库" | bge-m3 + Milvus 已落 192 条 JD | "财税法规结构强，embedding 选 bge-m3 中文 SOTA + 1024 维；分块用层级化——条款级精确召回 + 篇章级上下文兜底；我现在 ai_collector 就是这套结构，召回 A+" | ✅ |
+| "落地 RAG：法规库 / 企业知识库" | bge-m3 + Milvus 已落 192 条 JD | "财税法规结构强，embedding 选 bge-m3 中文 SOTA + 1024 维；分块用层级化——条款级精确召回 + 篇章级上下文兜底；我现在 AI-jobs-helper 就是这套结构，召回 A+" | ✅ |
 | "AI 使用能力：Prompt 设计 / 评测 / Bad Case" | bad_case_store + replay CLI | "Bad case 闭环：SQLite 单表 + status/root_cause/fix_commit 字段，replay 命令批量回放；这习惯从军工测评带过来" | ✅ |
 | "AI 辅助开发：Cursor" | 🟡 装了但用得不多 | "Cursor + Claude Code 都用，Cursor 做单点编辑，Claude Code 做长链路重构" | 🟡 投前真用几次 |
 | "Function Calling / Tool Use / RAG 至少 2 项" | Function Calling ✅ / Tool Use ✅ / RAG ✅ | "三项都掌握，最熟 RAG——本地 bge-m3 + Milvus + 4 query benchmark 召回 A+" | ✅ |

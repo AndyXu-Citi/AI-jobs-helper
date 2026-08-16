@@ -1,4 +1,4 @@
-# ai_collector_project v3.1 路线图
+# AI-jobs-helper v3.1 路线图
 
 > **从「单 Agent 闭环」升级为「MCP 生态原生 + 多 Agent 协作」**
 > v3.0 证明了 Agent 能自主决策；v3.1 把它**接入 AI 生态**——
@@ -114,7 +114,7 @@ if __name__ == "__main__":
 ## 二、目录结构（v3.1 增量）
 
 ```
-ai_collector_project/
+AI-jobs-helper/
 ├── src/
 │   ├── agent/                      ← v3.0 已有
 │   │   ├── graph.py                ← 现 supervisor 节点入口

@@ -28,7 +28,7 @@
 
 ## 三、被问到时的标准应答模板
 
-> "GPT 系列大致经历了 5 个阶段：GPT-1 奠定预训练+微调范式，GPT-2 发现了 zero-shot，GPT-3 又把规模拉大涌现了 in-context learning，InstructGPT 引入 RLHF 解决对齐问题，ChatGPT 是 InstructGPT 的对话产品化。我做 ai_collector_project 时主要在用 GPT-3 之后的能力——in-context learning 写 prompt，加上对齐后的指令跟随。"
+> "GPT 系列大致经历了 5 个阶段：GPT-1 奠定预训练+微调范式，GPT-2 发现了 zero-shot，GPT-3 又把规模拉大涌现了 in-context learning，InstructGPT 引入 RLHF 解决对齐问题，ChatGPT 是 InstructGPT 的对话产品化。我做 AI-jobs-helper 时主要在用 GPT-3 之后的能力——in-context learning 写 prompt，加上对齐后的指令跟随。"
 
 (说完就停，别展开 Transformer 数学，那不是这岗位的事。)
 
@@ -46,7 +46,7 @@
 
 ---
 
-## 五、跟你 ai_collector_project 的连接
+## 五、跟你 AI-jobs-helper 的连接
 
 你已经在用的能力，对应 GPT 哪一代：
 - `langchain.chat_models` 调 GPT/Claude → InstructGPT + ChatGPT 范式

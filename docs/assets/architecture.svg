@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 880" font-family="-apple-system, 'Helvetica Neue', Helvetica, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
   <!--
-    AI Collector Project — 架构总览（v3.0 + v3.1）
+    AI-jobs-helper — 架构总览（v3.0 + v3.1）
     手绘 SVG，可直接被 GitHub README 渲染；简历用可在 Preview 中导出 PDF / PNG。
   -->
 
@@ -36,7 +36,7 @@
   <rect width="1280" height="880" fill="url(#bg)"/>
 
   <!-- Header -->
-  <text x="40" y="50" class="title">🤖 AI Collector Project — 求职 Agent 架构总览</text>
+  <text x="40" y="50" class="title">🤖 AI-jobs-helper — 求职 Agent 架构总览</text>
   <text x="40" y="72" class="subtitle">v3.0 LangGraph Agent · v3.1 MCP Server + Bad Case 闭环 · 192 条 Boss 真实 JD · 81 pytest 全绿</text>
 
   <!-- ============== Layer 1: 采集层 ============== -->
@@ -219,6 +219,6 @@
     LangGraph · RAG · bge-m3 · Milvus · CDP · MCP · 81 pytest · GitHub Actions CI · 5 城市 192 条真实 JD
   </text>
   <text x="640" y="862" text-anchor="middle" class="footer">
-    github.com/nakajimamiyuki/ai_collector_project
+    github.com/AndyXu-Citi/AI-jobs-helper
   </text>
 </svg>

@@ -27,7 +27,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r backend/requirements-dev.txt
 
       - name: Run unit tests (offline, no network/LLM/browser)
+        working-directory: backend
         run: pytest tests/ -v

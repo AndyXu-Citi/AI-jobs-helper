@@ -1,4 +1,4 @@
-# ai_collector_project v3.0 路线图
+# AI-jobs-helper v3.0 路线图
 
 > **从「RAG 检索器」升级为「求职 Agent」**
 > 一个能自主搜索、自主决策、自主反思的端到端 AI Agent。
@@ -35,7 +35,7 @@
 ## 二、目录结构（v2.1 增量）
 
 ```
-ai_collector_project/
+AI-jobs-helper/
 ├── src/
 │   ├── sources/
 │   │   ├── base.py            ← 已有
@@ -337,7 +337,7 @@ scripts/find_jobs.py     62 行   CLI 入口
 - 路径：parse → retrieve → filter (30→6) → reflect (done) → summarize
 - 用时 213.7s（summarize LLM 调用 90s+，火山 coding 模型对长 prompt 较慢）
 - 输出：6 条岗位 + Top 3 强推荐 + 3 项技能差距 + 一句话总结
-- ⭐ 报告里准确引用了 ai_collector v2.1 的 RAG 经验和 JD 中对应的"知识库构建职责"
+- ⭐ 报告里准确引用了 AI-jobs-helper v2.1 的 RAG 经验和 JD 中对应的"知识库构建职责"
 
 **Run 2**：`"找郑州本科 1-3 年薪资 25K+ 要 LangGraph 的 AI Agent 开发岗"`（故意造的稀有需求）
 - 路径：parse → retrieve → filter (0) → **reflect retry × 3** → summarize

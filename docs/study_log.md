@@ -20,7 +20,7 @@
 
 - 学了啥：LangChain 4 大核心模块（Model I/O / Chains / Retrieval / Agents），
   类比 Spring 之于 Java——把 LLM 应用开发的零散环节串成链。
-- 新点：ai_collector_project 不是传统 LangChain Chain 项目，而是 LangGraph 主编排 + LangChain 生态模型调用 + 本地 RAG 检索 + MCP 工具暴露。
+- 新点：AI-jobs-helper 不是传统 LangChain Chain 项目，而是 LangGraph 主编排 + LangChain 生态模型调用 + 本地 RAG 检索 + MCP 工具暴露。
 - 没懂点：项目是 vibe coding 搭起来的，所以还需要把 `src/agent/graph.py` 和 `src/agent/nodes.py` 里的 LangGraph/LangChain 代码逐行对上；明天看 6-11 集时重点补 Model I/O。
 
 **自测 5 题成绩 4/5**：

@@ -41,7 +41,7 @@
 3. **现成的链式组装**：RAG / Agent / Memory 都有现成轮子，不用从 0 写
 
 **加分点**：能讲出自己项目里的真实感受。
-> "我在 ai_collector_project 里用 LangChain 切换 GLM-4 和本地 ollama 时，只改了配置，没改业务代码——这就是第 2 条的实际收益。"
+> "我在 AI-jobs-helper 里用 LangChain 切换 GLM-4 和本地 ollama 时，只改了配置，没改业务代码——这就是第 2 条的实际收益。"
 
 ---
 
@@ -82,7 +82,7 @@
 - **Retrieval** = RAG 用的检索能力（向量化、向量库、查找）
 - **Agents** = 让 LLM 自己决定下一步干啥（Function Calling / Tool 调用）
 
-**项目对应**（你 ai_collector_project v3.0 里）：
+**项目对应**（你 AI-jobs-helper v3.0 里）：
 - Model I/O ✓ 调 chat 模型
 - Retrieval ✓ bge-m3 + Milvus 做 RAG
 - Agents ✓ LangGraph 反思决策
@@ -90,7 +90,7 @@
 
 ---
 
-### Q5: ai_collector_project 跟 LangChain / LangGraph 有什么关系？ `#langchain` `#langgraph` `#项目复盘` `#面试常见`
+### Q5: AI-jobs-helper 跟 LangChain / LangGraph 有什么关系？ `#langchain` `#langgraph` `#项目复盘` `#面试常见`
 
 **我答（🟡）**：
 > "由于这个项目是通过 vibe coding 创造的，所以这个项目跟 LangChain 有什么关系我具体也不知道。"
@@ -98,7 +98,7 @@
 **为什么扣分**：诚实是对的，但面试里不能停在“不知道”。至少要能把项目里的 3 个文件和 LangChain/LangGraph 的角色对上。
 
 **标准答案 / 完整版**：
-> ai_collector_project 不是传统 LangChain Chain 项目，而是 **LangGraph + LangChain 生态组件** 的项目。
+> AI-jobs-helper 不是传统 LangChain Chain 项目，而是 **LangGraph + LangChain 生态组件** 的项目。
 > 其中 LangGraph 负责把求职 Agent 编排成状态机；LangChain 生态负责模型调用和消息格式；RAG 检索部分则是 bge-m3 + Milvus + Ollama 的本地语义检索。
 
 **项目对应（按文件说）**：
