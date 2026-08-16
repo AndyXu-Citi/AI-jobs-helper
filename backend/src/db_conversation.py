@@ -124,3 +124,44 @@ def get_history(conversation_id: str, limit: int = 50) -> list[dict]:
         return cur.fetchall()
     finally:
         conn.close()
+
+
+def get_conversation(conversation_id: str) -> dict | None:
+    """读取单条会话元信息（含 mode），用于重启后恢复面试会话的 submode。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """SELECT conversation_id, user_id, title, mode, created_at, updated_at
+               FROM conversations WHERE conversation_id=%s LIMIT 1""",
+            (conversation_id,))
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def count_messages(conversation_id: str) -> int:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE conversation_id=%s",
+            (conversation_id,))
+        return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def list_interviews(user_id: str = "default", limit: int = 50) -> list[dict]:
+    """列出已持久化的面试会话（mode 形如 interview:<submode>），重启后仍可见。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """SELECT conversation_id, title, mode, created_at, updated_at
+               FROM conversations WHERE mode LIKE 'interview:%%'
+               ORDER BY updated_at DESC LIMIT %s""",
+            (limit,))
+        return cur.fetchall()
+    finally:
+        conn.close()

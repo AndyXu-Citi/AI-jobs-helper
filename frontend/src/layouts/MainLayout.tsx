@@ -8,9 +8,9 @@ interface MainLayoutProps {
 }
 
 const TABS: { id: TabId; label: string; icon?: React.ReactNode }[] = [
-  { id: 'chat', label: 'AI 助手' },
   { id: 'jobs', label: '岗位库' },
   { id: 'report', label: '技能报表' },
+  { id: 'chat', label: 'AI 助手' },
 ];
 
 export function MainLayout({ children }: MainLayoutProps) {

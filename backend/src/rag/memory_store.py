@@ -138,9 +138,13 @@ class MemoryStore:
             return False
 
     def recall(
-        self, user_id: str, query_embedding: list[float], top_k: int = 5,
-    ) -> list[str]:
-        """跨会话语义召回该用户的历史记忆片段（content 列表）。"""
+        self, user_id: str, query_embedding: list[float], top_k: int = 10,
+    ) -> list[dict]:
+        """跨会话语义召回该用户的历史记忆片段。
+
+        返回 list[dict]，每项含 content / score(余弦相似度) / created_at / memory_type。
+        score 用于相关性阈值与时间衰减；memory_type 用于区分 summary / 普通对话。
+        """
         if not self.enabled:
             return []
         if len(query_embedding) != EMBED_DIM:
@@ -152,13 +156,20 @@ class MemoryStore:
                 data=[list(query_embedding)], anns_field="embedding",
                 search_params={"metric_type": "COSINE"}, limit=top_k,
                 filter=f"user_id == '{_esc(user_id)}'",
-                output_fields=["content", "memory_type"],
+                output_fields=["content", "memory_type", "created_at"],
             )
             out = []
             for h in res[0]:
-                c = h.get("entity", {}).get("content", "")
-                if c:
-                    out.append(c)
+                ent = h.get("entity", {})
+                c = ent.get("content", "")
+                if not c:
+                    continue
+                out.append({
+                    "content": c,
+                    "score": float(h.get("distance", 0) or 0),
+                    "created_at": int(ent.get("created_at", 0) or 0),
+                    "memory_type": ent.get("memory_type", "") or "",
+                })
             return out
         except Exception as e:
             logger.warning(f"[MemoryStore] recall 失败: {e}")

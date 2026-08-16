@@ -1,16 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import ReactECharts from 'echarts-for-react';
+import type { EChartsOption } from 'echarts';
 import { reportApi, type RawReportData } from '../api';
 import { Card, SkillBar, EmptyState, Spinner } from '../components/ui';
+import { useJobStore, useTabStore } from '../stores';
 
 export function SkillReportPage() {
   const [data, setData] = useState<RawReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const { setFilter, setSkills } = useJobStore();
+  const { setActiveTab } = useTabStore();
+
   useEffect(() => {
     async function load() {
       try {
-        // reportApi.get() 现在直接返回后端裸数据（无 .data 包装）
         const res = await reportApi.get();
         setData(res);
       } catch (err) {
@@ -21,6 +26,31 @@ export function SkillReportPage() {
     }
     load();
   }, []);
+
+  const handleSkillClick = (skill: string) => {
+    setSkills([skill]);
+    setActiveTab('jobs');
+  };
+
+  const handleCityClick = (city: string) => {
+    setFilter('city', city);
+    setActiveTab('jobs');
+  };
+
+  const handleSalaryClick = (band: string) => {
+    const range = bandToSalaryRange(band);
+    if (range) setFilter('salaryRange', range);
+    setActiveTab('jobs');
+  };
+
+  const treemapOption = useMemo<EChartsOption>(
+    () => (data ? buildTreemapOption(data.skills.map((s) => ({ name: s.name, count: s.count }))) : {}),
+    [data]
+  );
+
+  const onTreemapClick = (params: any) => {
+    if (params?.name && !params.name.includes('其他')) handleSkillClick(params.name);
+  };
 
   if (loading) return <Spinner size="lg" />;
   if (error || !data) return <EmptyState title="加载失败" description={error || undefined} />;
@@ -34,48 +64,57 @@ export function SkillReportPage() {
         <StatCard label="覆盖城市" value={data.cities.length} color="warning" />
       </div>
 
-      {/* Skills Chart */}
-      <Card padding="lg">
-        <h2 className="text-base font-semibold text-text-primary mb-4">技能需求分布</h2>
-        <div className="space-y-0.5">
-          {data.skills.map((s) => (
-            <SkillBar
-              key={s.name}
-              skill={s.name}
-              count={s.count}
-              total={data.total_jobs}
-              maxCount={data.skills[0]?.count}
+      {/* Main: Treemap + Side Stats */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Card padding="md" className="lg:col-span-2 h-[600px] flex flex-col">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-base font-semibold text-text-primary">技能需求分布</h2>
+            <span className="text-xs text-text-muted">点击板块跳转岗位库</span>
+          </div>
+          <div className="flex-1 min-h-0 overflow-visible">
+            <ReactECharts
+              option={treemapOption}
+              style={{ height: '100%', width: '100%' }}
+              onEvents={{ click: onTreemapClick }}
             />
-          ))}
+          </div>
+        </Card>
+
+        <div className="space-y-4">
+          <Card padding="lg" className="h-[250px] flex flex-col">
+            <h3 className="text-sm font-semibold text-text-primary mb-3">城市分布</h3>
+            <div className="overflow-y-auto flex-1 space-y-0.5">
+              {data.cities.slice(0, 10).map((c) => (
+                <SkillBar
+                  key={c.name}
+                  skill={c.name}
+                  count={c.count}
+                  total={data.total_jobs}
+                  maxCount={data.cities[0]?.count}
+                  onClick={() => handleCityClick(c.name)}
+                />
+              ))}
+            </div>
+          </Card>
+
+          <Card padding="lg" className="flex flex-col">
+            <h3 className="text-sm font-semibold text-text-primary mb-3">薪资范围</h3>
+            <div className="space-y-0.5">
+              {data.salary_bands
+                .filter((r) => r.count > 0)
+                .map((r) => (
+                  <SkillBar
+                    key={r.name}
+                    skill={r.name}
+                    count={r.count}
+                    total={data.total_jobs}
+                    maxCount={Math.max(...data.salary_bands.map((x) => x.count))}
+                    onClick={() => handleSalaryClick(r.name)}
+                  />
+                ))}
+            </div>
+          </Card>
         </div>
-      </Card>
-
-      {/* Cities & Salary */}
-      <div className="grid grid-cols-2 gap-4">
-        <Card padding="lg">
-          <h3 className="text-sm font-semibold text-text-primary mb-3">城市分布</h3>
-          <div className="space-y-2">
-            {data.cities.slice(0, 10).map((c) => (
-              <div key={c.name} className="flex items-center justify-between text-sm">
-                <span className="text-text-secondary">{c.name}</span>
-                <span className="font-medium text-text-primary tabular-nums">{c.count}</span>
-                <span className="text-xs text-text-muted ml-1">{c.pct}%</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        <Card padding="lg">
-          <h3 className="text-sm font-semibold text-text-primary mb-3">薪资范围</h3>
-          <div className="space-y-2">
-            {data.salary_bands.map((r) => (
-              <div key={r.name} className="flex items-center justify-between text-sm">
-                <span className="text-text-secondary">{r.name}</span>
-                <span className="font-medium text-text-primary tabular-nums">{r.count}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
       </div>
 
       {/* My Coverage */}
@@ -87,7 +126,13 @@ export function SkillReportPage() {
               <div className="text-xs text-success font-medium mb-1.5">已掌握 ({data.my_coverage.have.length})</div>
               <div className="flex flex-wrap gap-1">
                 {data.my_coverage.have.map((item) => (
-                  <span key={item.skill} className="text-xs bg-green-50 text-success px-2 py-0.5 rounded">{item.skill}</span>
+                  <button
+                    key={item.skill}
+                    onClick={() => handleSkillClick(item.skill)}
+                    className="text-xs bg-green-50 text-success px-2 py-0.5 rounded hover:bg-green-100 transition-colors"
+                  >
+                    {item.skill}
+                  </button>
                 ))}
               </div>
             </div>
@@ -95,7 +140,13 @@ export function SkillReportPage() {
               <div className="text-xs text-warning font-medium mb-1.5">学习中 ({data.my_coverage.learning.length})</div>
               <div className="flex flex-wrap gap-1">
                 {data.my_coverage.learning.map((item) => (
-                  <span key={item.skill} className="text-xs bg-amber-50 text-warning px-2 py-0.5 rounded">{item.skill}</span>
+                  <button
+                    key={item.skill}
+                    onClick={() => handleSkillClick(item.skill)}
+                    className="text-xs bg-amber-50 text-warning px-2 py-0.5 rounded hover:bg-amber-100 transition-colors"
+                  >
+                    {item.skill}
+                  </button>
                 ))}
               </div>
             </div>
@@ -103,7 +154,13 @@ export function SkillReportPage() {
               <div className="text-xs text-danger font-medium mb-1.5">待补齐 ({data.my_coverage.missing_top.length})</div>
               <div className="flex flex-wrap gap-1">
                 {data.my_coverage.missing_top.map((item) => (
-                  <span key={item.skill} className="text-xs bg-red-50 text-danger px-2 py-0.5 rounded">{item.skill}</span>
+                  <button
+                    key={item.skill}
+                    onClick={() => handleSkillClick(item.skill)}
+                    className="text-xs bg-red-50 text-danger px-2 py-0.5 rounded hover:bg-red-100 transition-colors"
+                  >
+                    {item.skill}
+                  </button>
                 ))}
               </div>
             </div>
@@ -112,6 +169,86 @@ export function SkillReportPage() {
       )}
     </div>
   );
+}
+
+/** Treemap 板块图：按技能出现次数自动排成大小不一的方块，出现越多板块越大，可点击跳转 */
+function buildTreemapOption(skills: { name: string; count: number }[]): EChartsOption {
+  const TOP_N = 40;
+  const sorted = [...skills].sort((a, b) => b.count - a.count);
+  const main = sorted.slice(0, TOP_N);
+  const rest = sorted.slice(TOP_N);
+  const treemapData = main.map((s) => ({ name: s.name, value: s.count }));
+  if (rest.length > 0) {
+    treemapData.push({
+      name: `其他 (${rest.length})`,
+      value: rest.reduce((a, s) => a + s.count, 0),
+    });
+  }
+  return {
+    tooltip: {
+      trigger: 'item',
+      formatter: (params: any) => `${params.name}<br/>出现 ${params.value} 次`,
+    },
+    series: [
+      {
+        type: 'treemap',
+        data: treemapData,
+        sort: 'desc',
+        left: '2%',
+        top: '2%',
+        right: '2%',
+        bottom: '2%',
+        width: '96%',
+        height: '96%',
+        roam: false,
+        nodeClick: false,
+        breadcrumb: { show: false },
+        label: {
+          show: true,
+          formatter: '{b}\n{c} 次',
+          fontSize: 10,
+          color: '#fff',
+          overflow: 'break',
+          lineHeight: 13,
+          padding: [2, 2],
+        },
+        upperLabel: { show: false },
+        itemStyle: {
+          borderColor: '#fff',
+          borderWidth: 1,
+          gapWidth: 1,
+        },
+        colorSaturation: [0.35, 0.65],
+        levels: [
+          {
+            itemStyle: {
+              borderWidth: 0,
+              gapWidth: 2,
+              borderColorSaturation: 0.6,
+            },
+            label: {
+              formatter: '{b}\n{c} 次',
+              fontSize: 10,
+              overflow: 'break',
+              lineHeight: 13,
+              padding: [2, 2],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function bandToSalaryRange(band: string): string {
+  const map: Record<string, string> = {
+    '<10K': '0-10',
+    '10-15K': '10-20',
+    '15-20K': '10-20',
+    '20-30K': '20-30',
+    '30K+': '30-50',
+  };
+  return map[band] || '';
 }
 
 function StatCard({ label, value, color }: { label: string; value: number; color: 'brand' | 'success' | 'warning' }) {

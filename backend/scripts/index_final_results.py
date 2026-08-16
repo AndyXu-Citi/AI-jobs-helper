@@ -78,9 +78,15 @@ def build_embed_text(structured: dict) -> str:
     if salary:
         parts.append(f"薪资：{salary}")
 
-    # 技能：Boss 官方标签 + 详情标签（与 /api/report / 技能差距统计口径一致）
-    skills = list(boss.get("skills") or []) + list(boss.get("detail_labels") or [])
+    # 技能：Boss 官方标签 + LLM 提取的技能 + 详情标签（与 /api/report / 技能差距统计口径一致）
+    # skills_extracted 由 llm_extract_skills.py 从 JD 正文用 LLM 提取，能补 Boss 官方标签覆盖不到的技能
+    skills = (
+        list(boss.get("skills") or [])
+        + list(boss.get("skills_extracted") or [])
+        + list(boss.get("detail_labels") or [])
+    )
     skills = [s for s in skills if s]
+    skills = list(dict.fromkeys(skills))  # 去重但保序
     if skills:
         parts.append("技能：" + "、".join(skills))
 

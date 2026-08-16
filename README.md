@@ -72,7 +72,7 @@ cp .env.example .env        # 然后填入 LLM_API_KEY / DB_* / MILVUS_URL
 python scripts/init_db_memory.py
 
 # 启动 API 服务
-python -m src.web.app        # 默认 http://localhost:8000 ，Swagger: /docs
+python -m src.web.app        # 默认 http://localhost:8001 ，Swagger: /docs
 ```
 
 ### 2. 前端
@@ -80,7 +80,7 @@ python -m src.web.app        # 默认 http://localhost:8000 ，Swagger: /docs
 ```bash
 cd frontend
 npm install
-npm run dev                  # http://localhost:5173 （Vite 开发服务器，代理 /api → :8000）
+npm run dev                  # http://localhost:5173 （Vite 开发服务器，代理 /api → :8001）
 ```
 
 > 前端通过 Vite dev server 独立运行；`backend/src/web/static/` 仅保留占位页，`GET /` 不承载前端静态资源。生产部署可后续将 `app.py` 的 `GET /` 指向 `frontend/dist`。
@@ -192,7 +192,7 @@ pytest tests/ -m unit        # 离线单测：embedder / vector_store（FAISS fa
 
 | 层 | 技术 |
 |----|------|
-| 前端 | React 19 · Vite · TypeScript · Tailwind CSS v4 · Zustand |
+| 前端 | React 19 · Vite · TypeScript · Tailwind CSS v4 · Zustand · ECharts（echarts + echarts-for-react，技能报表 Treemap 板块图） |
 | 后端 | FastAPI · Uvicorn · Pydantic · LangGraph · LangChain |
 | 向量 | Milvus（hybrid dense+sparse）· bge-m3（HuggingFaceEmbedder）· FAISS（fallback） |
 | 数据库 | MySQL 8.0（`final_results` / `conversations` / `chat_messages`） |

@@ -153,5 +153,5 @@ export const jobsApi = {
 // ===== 技能报表（返回后端原始格式）=====
 export const reportApi = {
   get: (): Promise<RawReportData> =>
-    request<RawReportData>('/report'),
+    request<RawReportData>('/report?top_n=40'),
 };

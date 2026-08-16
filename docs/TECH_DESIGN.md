@@ -182,7 +182,7 @@ python scripts/index_final_results.py --rebuild
 
 # 5. 跑 Agent / 启动 Web
 python scripts/find_jobs.py "杭州 Agent 开发" --verbose
-python -m src.web.app          # http://localhost:8000
+python -m src.web.app          # http://localhost:8001
 
 # 6. （可选）接入 MCP 生态
 python src/mcp_server/ai_collector_mcp.py

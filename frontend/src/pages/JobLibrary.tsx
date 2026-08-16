@@ -93,12 +93,19 @@ export function JobLibraryPage() {
           {cities.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
 
-        <input
-          value={filters.keyword}
-          onChange={(e) => setFilter('keyword', e.target.value)}
-          placeholder="搜索岗位/公司..."
-          className="text-xs rounded border border-border-light bg-surface-0 px-2 py-1 w-40"
-        />
+        {/* 薪资范围 */}
+        <select
+          value={filters.salaryRange}
+          onChange={(e) => setFilter('salaryRange', e.target.value)}
+          className="text-xs rounded border border-border-light bg-surface-0 px-2 py-1"
+        >
+          <option value="">全部薪资</option>
+          <option value="0-10">10K 以下</option>
+          <option value="10-20">10-20K</option>
+          <option value="20-30">20-30K</option>
+          <option value="30-50">30-50K</option>
+          <option value="50-999">50K 以上</option>
+        </select>
 
         {/* 技能多选下拉 */}
         <div className="skill-multi-select relative">
@@ -165,6 +172,13 @@ export function JobLibraryPage() {
           )}
         </div>
 
+        <input
+          value={filters.keyword}
+          onChange={(e) => setFilter('keyword', e.target.value)}
+          placeholder="搜索岗位/公司..."
+          className="text-xs rounded border border-border-light bg-surface-0 px-2 py-1 w-40"
+        />
+
         <span className="text-xs text-text-muted ml-auto">
           共 {filteredJobs.length} 条 / {jobs.length} 条
         </span>
@@ -176,7 +190,7 @@ export function JobLibraryPage() {
       ) : error ? (
         <EmptyState title="加载失败" description={error} action={<Button onClick={() => window.location.reload()}>重试</Button>} />
       ) : (
-        <div className="grid grid-cols-[340px_1fr] gap-4 min-h-[500px]" style={{ height: 'calc(100vh - 320px)' }}>
+        <div className="grid grid-cols-[340px_1fr] gap-4 min-h-[600px]" style={{ height: 'calc(100vh - 220px)' }}>
           {/* Left: Job List */}
           <Card padding="none" className="overflow-hidden flex flex-col">
             <div className="px-4 py-2.5 border-b border-border-light bg-surface-1 font-semibold text-sm">
@@ -251,7 +265,21 @@ function JobDetail({ job, onClose }: { job: JobItem; onClose: () => void }) {
     <div className="p-5 space-y-4">
       <div className="flex justify-between items-start">
         <div>
-          <h2 className="text-lg font-bold text-text-primary">{job.title}</h2>
+          <h2 className="text-lg font-bold text-text-primary">
+            {job.url ? (
+              <a
+                href={job.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-brand-600 hover:underline"
+                title="在 Boss 直聘打开"
+              >
+                {job.title}
+              </a>
+            ) : (
+              job.title
+            )}
+          </h2>
           <p className="text-sm text-text-secondary mt-0.5">{job.company}</p>
         </div>
         <Button variant="ghost" size="sm" onClick={onClose}>✕</Button>

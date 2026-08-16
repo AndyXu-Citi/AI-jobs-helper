@@ -20,6 +20,7 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 import json
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ import threading
 # 记忆模块：MySQL 会话原文持久化 + Milvus 长期语义记忆
 from src.db_conversation import (
     ensure_tables, create_conversation, touch_conversation, save_message,
+    get_history, get_conversation, count_messages, list_interviews,
 )
 from src.rag.memory_store import MemoryStore
 
@@ -81,23 +83,152 @@ def _ensure_memory_ready() -> MemoryStore | None:
     return _MEMORY_STORE
 
 
-def _recall_context(user_id: str, message: str, top_k: int = 3) -> str:
-    """跨会话语义召回该用户历史记忆，返回格式化的上下文串（无则空）。"""
+def _cosine(a: list[float], b: list[float]) -> float:
+    """余弦相似度。"""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _mmr_select(store, query_vec, candidates: list[dict], top_k: int = 5,
+                lambda_: float = 0.7) -> list[dict]:
+    """MMR 去冗余：在相关性与多样性间权衡，避免召回高度相似的重复片段。"""
+    if not candidates:
+        return []
+    vecs: dict[int, list[float]] = {}
+    for c in candidates:
+        v = store.embed(c["content"])
+        if v:
+            vecs[id(c)] = v
+    pool = [c for c in candidates if id(c) in vecs]
+    selected: list[dict] = []
+    while pool and len(selected) < top_k:
+        best, best_score = None, -1e9
+        for c in pool:
+            sim_q = _cosine(query_vec, vecs[id(c)])
+            max_sim_sel = max(
+                [_cosine(vecs[id(s)], vecs[id(c)]) for s in selected], default=0.0
+            )
+            mmr = lambda_ * sim_q - (1 - lambda_) * max_sim_sel
+            if mmr > best_score:
+                best_score, best = mmr, c
+        selected.append(best)
+        pool.remove(best)
+    return selected
+
+
+def _recall_context(user_id: str, message: str, conversation_id: str | None = None,
+                    top_k: int = 5) -> str:
+    """跨会话语义召回该用户历史记忆，经 MMR 去冗余 + 时间衰减 + 相关性阈值后返回。
+
+    - 多轮 query：若提供 conversation_id，用最近 3 条 user 消息拼接作为检索 query。
+    - summary 类型（L4 会话摘要）优先前置，作为长期背景。
+    """
     store = _MEMORY_STORE
-    if not store or not store.enabled or not message:
+    if not store or not store.enabled:
         return ""
-    vec = store.embed(message)
+    # 多轮 query 拼接：优先用最近 3 条 user 消息构造检索文本
+    query_text = message
+    if conversation_id:
+        try:
+            from src.db_conversation import get_history
+            hist = get_history(conversation_id, limit=50)
+            user_turns = [h["content"] for h in hist if h.get("role") == "user"]
+            if user_turns:
+                query_text = "\n".join(user_turns[-3:])
+        except Exception:
+            pass
+    vec = store.embed(query_text)
     if not vec:
         return ""
-    mems = store.recall(user_id, vec, top_k=top_k)
-    if not mems:
+    # 召回更多候选，再经 MMR / 阈值 / 时间衰减筛选
+    cands = store.recall(user_id, vec, top_k=10)
+    if not cands:
         return ""
-    return "\n".join(f"- {m}" for m in mems)
+
+    REL_THRESHOLD = 0.4
+    now = time.time()
+    summaries: list[dict] = []
+    normal: list[dict] = []
+    for c in cands:
+        if c.get("score", 0) < REL_THRESHOLD:
+            continue  # 相关性过低，丢弃
+        if c.get("memory_type") == "summary":
+            summaries.append(c)
+        else:
+            normal.append(c)
+    # 时间衰减：越久远的记忆权重越低（30 天衰减约一半）
+    for c in normal:
+        age_days = max(0.0, (now - (c.get("created_at") or now)) / 86400.0)
+        c["eff"] = c["score"] * (1.0 / (1.0 + age_days / 30.0))
+    normal.sort(key=lambda x: x["eff"], reverse=True)
+
+    selected = _mmr_select(store, vec, normal, top_k=top_k)
+
+    lines = []
+    for s in summaries[:2]:
+        lines.append(f"[长期摘要] {s['content']}")
+    for c in selected:
+        lines.append(f"- {c['content']}")
+    return "\n".join(lines)
+
+
+_SUMMARY_PROGRESS: dict[str, int] = {}  # conversation_id -> 已压缩到的消息条数
+
+
+def _summarize_session(text: str) -> str:
+    """用 LLM 把一段对话压缩成要点摘要。失败返回空串。"""
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from src.agent.nodes import _llm
+        resp = _llm().invoke([
+            SystemMessage(content=(
+                "请把下面的对话压缩成简洁摘要，保留用户透露的关键需求、技能、"
+                "偏好、未解决的问题，用要点列出，不要编造。"
+            )),
+            HumanMessage(content=text[:4000]),
+        ])
+        return resp.content if isinstance(resp.content, str) else str(resp.content)
+    except Exception as e:
+        app_logger.warning(f"会话摘要 LLM 失败: {e}")
+        return ""
+
+
+def _maybe_summarize_session(conversation_id: str, user_id: str) -> None:
+    """L4 会话摘要压缩：单会话消息超阈值时，把早期对话压缩成 summary 存入记忆。"""
+    try:
+        from src.db_conversation import get_history
+        hist = get_history(conversation_id, limit=200)
+        total = len(hist)
+        last = _SUMMARY_PROGRESS.get(conversation_id, 0)
+        if total < 20:
+            return
+        if total - last < 10:
+            return  # 距上次压缩不足 10 条，避免频繁压缩
+        to_compress = hist[last: total - 10]
+        if not to_compress:
+            return
+        text = "\n".join(f"{m.get('role')}: {m.get('content')}" for m in to_compress)
+        summary = _summarize_session(text)
+        if not summary:
+            return
+        if _MEMORY_STORE and _MEMORY_STORE.enabled:
+            _MEMORY_STORE.add_memory(
+                user_id=user_id, session_id=conversation_id,
+                memory_type="summary", content="对话摘要：" + summary,
+            )
+            _MEMORY_STORE.flush()
+        _SUMMARY_PROGRESS[conversation_id] = total - 10
+    except Exception as e:
+        app_logger.warning(f"会话摘要失败: {e}")
 
 
 def _persist_and_remember(conversation_id: str, user_id: str,
                           user_msg: str, assistant_reply: str, mode: str) -> None:
-    """落库原始对话 + 异步写入语义记忆（user_msg）。"""
+    """落库原始对话 + 异步写入语义记忆（user_msg + assistant_reply）。"""
     try:
         save_message(conversation_id, "user", user_msg, user_id=user_id)
         save_message(conversation_id, "assistant", assistant_reply, user_id=user_id)
@@ -105,23 +236,52 @@ def _persist_and_remember(conversation_id: str, user_id: str,
     except Exception as e:
         app_logger.warning(f"持久化对话失败: {e}")
 
-    # 异步写语义记忆，不阻塞回复
-    if _MEMORY_STORE and _MEMORY_STORE.enabled and user_msg:
+    # 异步写语义记忆，不阻塞回复（用户发言 + 助手回复都存，便于跨会话完整回忆）
+    if _MEMORY_STORE and _MEMORY_STORE.enabled:
+        if user_msg:
+            threading.Thread(
+                target=_safe_add_memory,
+                args=(user_id, conversation_id, user_msg, "user_msg"),
+                daemon=True,
+            ).start()
+        if assistant_reply:
+            threading.Thread(
+                target=_safe_add_memory,
+                args=(user_id, conversation_id, assistant_reply, "assistant_reply"),
+                daemon=True,
+            ).start()
+
+    # L3 长期画像自动沉淀（独立 md，不碰 my_profile.yaml）：每轮对话后增量提炼
+    if user_msg and assistant_reply:
         threading.Thread(
-            target=_safe_add_memory, args=(user_id, conversation_id, user_msg),
-            daemon=True,
+            target=_safe_upsert_longterm, args=(user_msg, assistant_reply), daemon=True,
+        ).start()
+
+    # L4 会话摘要压缩（超长对话防 context 爆炸）：异步检测并压缩早期对话
+    if conversation_id:
+        threading.Thread(
+            target=_maybe_summarize_session, args=(conversation_id, user_id), daemon=True,
         ).start()
 
 
-def _safe_add_memory(user_id: str, conversation_id: str, user_msg: str) -> None:
+def _safe_add_memory(user_id: str, conversation_id: str, content: str, memory_type: str) -> None:
     try:
         ok = _MEMORY_STORE.add_memory(
             user_id=user_id, session_id=conversation_id,
-            memory_type="user_msg", content=user_msg)
+            memory_type=memory_type, content=content)
         if ok:
             _MEMORY_STORE.flush()
     except Exception as e:
         app_logger.warning(f"记忆写入失败: {e}")
+
+
+def _safe_upsert_longterm(user_msg: str, assistant_reply: str) -> None:
+    """异步把本轮对话沉淀进 L3 长期画像 md。"""
+    try:
+        from src.agent.long_term_memory import upsert_longterm_async
+        upsert_longterm_async(user_msg, assistant_reply)
+    except Exception as e:
+        app_logger.warning(f"L3 画像沉淀失败: {e}")
 
 # ------------------------------------------------------------------
 # Pydantic 请求/响应模型
@@ -167,21 +327,9 @@ class ChatResponse(BaseModel):
 # FastAPI app
 # ------------------------------------------------------------------
 
-app = FastAPI(title="AI 求职 Agent", version="3.0")
-
-_STATIC_DIR = Path(__file__).parent / "static"
-
-
-@app.on_event("startup")
-async def preload_embedder():
-    """服务启动时预加载 bge-m3 模型，避免第一次搜索卡顿。"""
-    app_logger.info("预加载 bge-m3 embedding 模型...")
-    try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _load_embedder)
-    except Exception as e:
-        app_logger.warning(f"预加载模型失败，首次搜索时会自动加载: {e}")
+# 是否启动时预加载 embedding 模型。开发/调试可设 PRELOAD_EMBEDDER=false 秒启，
+# 第一次搜索时会由 HuggingFaceEmbedder 自身懒加载。
+_PRELOAD_EMBEDDER = os.environ.get("PRELOAD_EMBEDDER", "true").lower() not in ("0", "false", "off", "no")
 
 
 def _load_embedder():
@@ -190,6 +338,26 @@ def _load_embedder():
     embedder = HuggingFaceEmbedder()
     embedder.embed_one("预加载")
     app_logger.info("bge-m3 模型加载完成")
+
+
+@asynccontextmanager
+async def lifespan(app: "FastAPI"):
+    """服务生命周期：启动时可选预加载 bge-m3 模型，避免第一次搜索卡顿。"""
+    if not _PRELOAD_EMBEDDER:
+        app_logger.info("PRELOAD_EMBEDDER=false，跳过启动时预加载，首次请求时懒加载")
+    else:
+        app_logger.info("预加载 bge-m3 embedding 模型...")
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _load_embedder)
+        except Exception as e:
+            app_logger.warning(f"预加载模型失败，首次搜索时会自动加载: {e}")
+    yield
+
+
+app = FastAPI(title="AI 求职 Agent", version="3.0", lifespan=lifespan)
+
+_STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _job_to_item(job: JobRecord) -> JobItem:
@@ -555,14 +723,17 @@ async def get_report(top_n: int = 30):
 
     for s in structs:
         b = s.get("_boss") or {}
-        # 1) LLM 提取的技能缓存（由 scripts/llm_extract_skills.py 预先写入）
+        # 按岗位去重：同一岗位内 skills_extracted + skills 合并为集合，每个技能只计 1 次
+        # （与 /api/jobs 的 merged 口径一致，count = 含该技能的岗位数）
+        job_skills = set()
         for sk in (b.get("skills_extracted") or []):
             if isinstance(sk, str) and sk.strip():
-                skill_counter[sk.strip()] += 1
-        # 2) Boss 官方 skills 标签
+                job_skills.add(sk.strip())
         for sk in (b.get("skills") or []):
             if isinstance(sk, str) and sk.strip():
-                skill_counter[sk.strip()] += 1
+                job_skills.add(sk.strip())
+        for sk in job_skills:
+            skill_counter[sk] += 1
 
         c = (b.get("city") or "").strip()
         if c:
@@ -782,8 +953,65 @@ async def match_rank(req: ChatRequest):
 import uuid
 import time
 
-# 内存会话存储（生产环境应换 Redis / 数据库）
+# 内存会话热缓存（重启即丢）；完整 history 已落 MySQL，重启后由 _recover_interview_session 恢复
 _interview_sessions: dict[str, dict] = {}
+
+
+def _interview_submode_from_conv(mode: str) -> str:
+    """conversations.mode 存 'interview:<submode>'，还原出 submode。"""
+    if mode.startswith("interview:"):
+        sub = mode.split(":", 1)[1]
+        if sub in _INTERVIEW_SYSTEM_PROMPTS:
+            return sub
+    return "resume"
+
+
+def _recover_interview_session(session_id: str, submode_hint: str | None = None) -> dict | None:
+    """优先命中内存热缓存；否则从 MySQL 恢复历史（进程重启不丢）。返回 sess 或 None。
+
+    system 用基础 prompt 重建（recall/L3 画像由各调用分支动态注入，无需持久化）。
+    """
+    if session_id in _interview_sessions:
+        return _interview_sessions[session_id]
+    rows = get_history(session_id)
+    if not rows:
+        return None
+    conv = get_conversation(session_id) or {}
+    submode = submode_hint or _interview_submode_from_conv(conv.get("mode", "")) or "resume"
+    if submode not in _INTERVIEW_SYSTEM_PROMPTS:
+        submode = "resume"
+    system = _INTERVIEW_SYSTEM_PROMPTS[submode]
+    history = [{"role": r["role"], "content": r["content"]} for r in rows]
+    sess = {
+        "mode": submode,
+        "mode_name": {"resume": "简历深挖", "project": "项目拷问",
+                      "knowledge": "知识点考核", "jd": "指定 JD 面试"}.get(submode, submode),
+        "system": system,
+        "history": history,
+        "created_at": rows[0].get("created_at") or time.time(),
+        "round": len(history) // 2,
+    }
+    _interview_sessions[session_id] = sess  # 回填热缓存
+    return sess
+
+
+def _persist_interview_turn(conversation_id: str, user_msg: str, assistant_reply: str,
+                            user_id: str = "default") -> None:
+    """落 MySQL 原文 + 异步写 L2 语义记忆（user/assistant 都存，跨面试共享技术水位）。"""
+    try:
+        save_message(conversation_id, "user", user_msg, user_id=user_id)
+        save_message(conversation_id, "assistant", assistant_reply, user_id=user_id)
+        touch_conversation(conversation_id)
+    except Exception as e:
+        app_logger.warning(f"面试会话落库失败: {e}")
+    if _MEMORY_STORE and _MEMORY_STORE.enabled:
+        if user_msg:
+            threading.Thread(target=_safe_add_memory,
+                             args=(user_id, conversation_id, user_msg, "user_msg"), daemon=True).start()
+        if assistant_reply:
+            threading.Thread(target=_safe_add_memory,
+                             args=(user_id, conversation_id, assistant_reply, "assistant_reply"),
+                             daemon=True).start()
 
 _INTERVIEW_SYSTEM_PROMPTS = {
     "resume": """你是一位**严厉但公正的技术面试官**，专精于「简历深挖」面试。
@@ -904,6 +1132,14 @@ async def start_interview(req: InterviewStartRequest):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"LLM 调用失败: {e}"})
 
+    # 持久化：落 MySQL 原文 + 异步写 L2（跨面试共享技术水位）；mode 编码 submode 便于重启恢复
+    try:
+        create_conversation(session_id, user_id=DEFAULT_USER_ID,
+                            title=mode_names.get(mode, mode), mode=f"interview:{mode}")
+    except Exception:
+        pass
+    _persist_interview_turn(session_id, initial_user, first_reply, user_id=DEFAULT_USER_ID)
+
     _interview_sessions[session_id] = {
         "mode": mode,
         "mode_name": mode_names.get(mode, mode),
@@ -931,18 +1167,27 @@ async def chat_interview(req: InterviewChatRequest):
     sid = (req.session_id or "").strip()
     msg = (req.message or "").strip()
 
-    if not sid or sid not in _interview_sessions:
-        return JSONResponse(status_code=404, content={"error": "会话不存在或已过期"})
+    if not sid:
+        return JSONResponse(status_code=404, content={"error": "缺少 session_id"})
+    sess = _recover_interview_session(sid)
+    if not sess:
+        return JSONResponse(status_code=404, content={"error": "会话不存在或已过期，请重新开始面试"})
     if not msg:
         return JSONResponse(status_code=400, content={"error": "请输入回复内容"})
 
-    sess = _interview_sessions[sid]
     sess["history"].append({"role": "user", "content": msg})
     sess["round"] += 1
 
     try:
         llm = _llm()
-        messages = [SystemMessage(content=sess["system"])]
+        # 动态召回候选人历史相关背景，注入本轮（跨面试/跨会话共享技术水位）
+        recalled = _recall_context(DEFAULT_USER_ID, msg, conversation_id=sid, top_k=3)
+        system = sess["system"]
+        if recalled:
+            system = (system
+                      + "\n\n【候选人历史背景（来自过往对话记忆，仅供参考，可辅助判断技术水位）】\n"
+                      + recalled)
+        messages = [SystemMessage(content=system)]
         for h in sess["history"]:
             if h["role"] == "user":
                 messages.append(HumanMessage(content=h["content"]))
@@ -957,6 +1202,7 @@ async def chat_interview(req: InterviewChatRequest):
         return JSONResponse(status_code=500, content={"error": f"LLM 调用失败: {e}"})
 
     sess["history"].append({"role": "assistant", "content": reply})
+    _persist_interview_turn(sid, msg, reply, user_id=DEFAULT_USER_ID)
 
     return {
         "session_id": sid,
@@ -967,16 +1213,26 @@ async def chat_interview(req: InterviewChatRequest):
 
 @app.get("/api/interview/sessions")
 async def list_interview_sessions():
-    """列出当前活跃的面试会话（调试用）。"""
+    """列出已持久化的面试会话（重启后仍可见，不再只依赖内存）。"""
+    try:
+        rows = list_interviews(limit=50)
+    except Exception as e:
+        app_logger.warning(f"列出面试会话失败: {e}")
+        rows = []
     sessions = []
-    for sid, sess in _interview_sessions.items():
+    for r in rows:
+        mode = r.get("mode", "")
+        submode = mode.split(":", 1)[1] if mode.startswith("interview:") else mode
+        mode_name = {"resume": "简历深挖", "project": "项目拷问",
+                     "knowledge": "知识点考核", "jd": "指定 JD 面试"}.get(submode, submode)
         sessions.append({
-            "session_id": sid,
-            "mode_name": sess.get("mode_name", ""),
-            "round": sess.get("round", 0),
-            "created_at": sess.get("created_at", 0),
+            "session_id": r.get("conversation_id"),
+            "mode_name": mode_name,
+            "title": r.get("title", ""),
+            "created_at": r.get("created_at", 0),
+            "updated_at": r.get("updated_at", 0),
         })
-    sessions.sort(key=lambda x: x["created_at"], reverse=True)
+    sessions.sort(key=lambda x: x["updated_at"], reverse=True)
     return {"sessions": sessions}
 
 
@@ -1076,6 +1332,12 @@ async def unified_chat(req: UnifiedChatRequest):
     # ---- 记忆 / 持久化 准备 ----
     _ensure_memory_ready()
     user_id = DEFAULT_USER_ID
+    # L3 长期画像（独立 md）：读取一次，注入对话上下文（不污染 my_profile.yaml）
+    try:
+        from src.agent.long_term_memory import load_longterm_md
+        lt = load_longterm_md()
+    except Exception:
+        lt = ""
     conversation_id = (req.session_id or __import__("uuid").uuid4().hex[:12])
     # 确保会话行存在（INSERT IGNORE，多轮幂等）
     try:
@@ -1089,10 +1351,12 @@ async def unified_chat(req: UnifiedChatRequest):
         submode = req.interview_submode or "resume"
 
         # 已有 session → 继续对话
-        if req.session_id and req.session_id in _interview_sessions:
+        sess = _recover_interview_session(req.session_id) if req.session_id else None
+        if sess:
             try:
                 llm = _llm()
-                sess = _interview_sessions[req.session_id]
+                # 对齐 conversation_id，避免历史分裂（首条设计上 conversation_id == session_id）
+                conversation_id = req.session_id
                 sess["history"].append({"role": "user", "content": message})
                 sess["round"] += 1
 
@@ -1144,7 +1408,7 @@ async def unified_chat(req: UnifiedChatRequest):
         conversation_id = session_id
         try:
             create_conversation(conversation_id, user_id=user_id,
-                                title=message[:30] or "新对话", mode=mode)
+                                title=message[:30] or "新对话", mode=f"interview:{submode}")
         except Exception:
             pass
         mode_labels = {
@@ -1155,6 +1419,19 @@ async def unified_chat(req: UnifiedChatRequest):
         }
         initial_user = f"{mode_labels.get(submode, '素材')}\n\n{content}"
         system = _INTERVIEW_SYSTEM_PROMPTS[submode]
+
+        # L3 长期画像注入（自动沉淀的用户技能/偏好，辅助判断技术水位）
+        if lt:
+            system += "\n\n【用户长期画像（对话自动沉淀，仅供参考）】\n" + lt
+
+        # 纳入统一记忆：召回候选人历史相关背景，辅助判断技术水位（跨面试/跨会话共享）
+        recalled = _recall_context(user_id, message, conversation_id=conversation_id, top_k=3)
+        if recalled:
+            system = (
+                system
+                + "\n\n【候选人历史背景（来自过往对话记忆，仅供参考，可辅助判断技术水位）】\n"
+                + recalled
+            )
 
         try:
             llm = _llm()
@@ -1207,7 +1484,9 @@ async def unified_chat(req: UnifiedChatRequest):
     if intent == "diagnose" and has_resume:
         try:
             llm = _llm()
-            recalled = _recall_context(user_id, message)
+            recalled = _recall_context(user_id, message, conversation_id=conversation_id)
+            if lt:
+                recalled = (recalled + "\n\n" + lt) if recalled else lt
             recalled_block = ""
             if recalled:
                 recalled_block = f"\n\n【用户历史记忆（仅供参考，可结合判断）】\n{recalled}\n"
@@ -1219,6 +1498,9 @@ async def unified_chat(req: UnifiedChatRequest):
 {recalled_block}
 简历内容：
 {req.resume_text[:3000]}"""
+
+            if lt:
+                diagnose_prompt += f"\n\n【用户长期画像（自动沉淀，可结合判断）】\n{lt}"
             resp = llm.invoke([
                 SystemMessage(content=_ASSISTANT_SYSTEM),
                 HumanMessage(content=diagnose_prompt),
@@ -1353,6 +1635,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "src.web.app:app",
         host="0.0.0.0",
-        port=8000,
-        reload=False,
+        port=8001,
+        reload=True,
     )

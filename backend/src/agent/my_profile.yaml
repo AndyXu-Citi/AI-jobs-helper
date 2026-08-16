@@ -8,16 +8,12 @@
 
 # === 基本画像（用于过滤硬条件） ===
 degree: "本科"                # 学历：本科 / 大专 / 硕士 / 不限
-years_of_experience: 2        # 工作年限（数字）
-current_city: "北京"          # 当前所在城市
+years_of_experience: 10        # 工作年限（数字）
+current_city: "上海"          # 当前所在城市
 target_cities:                # 期望工作城市（顺序代表优先级）
-  - 杭州
-  - 苏州
-  - 青岛
-  - 济南
-  - 郑州
-salary_min: 12000             # 期望最低月薪（元/月）
-salary_ideal: 18000           # 理想月薪
+  - 上海
+salary_min: 30000             # 期望最低月薪（元/月）
+salary_ideal: 30000           # 理想月薪
 # 期望工作类型：full_time / contract / internship
 job_type: "full_time"
 
@@ -26,9 +22,6 @@ job_type: "full_time"
 already_have:
   - Python
   - SQL
-  - 软件测试
-  - 测试用例设计
-  - Bug 跟踪与缺陷管理
   - Playwright
   - LangChain          # AI-jobs-helper v2/v3 实战
   - RAG                # bge-m3 + Milvus Lite
@@ -36,7 +29,6 @@ already_have:
   - bge-m3
   - 向量数据库
   - 反爬虫
-  - SQLite
   - Git
   - CI/CD
 
