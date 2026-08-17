@@ -425,14 +425,12 @@ def route_after_reflect(state: AgentState) -> str:
 # Node 5: summarize
 # 把通过过滤的 Top N 岗位 + 用户画像 + 技能差距，交给 LLM 生成 markdown 报告。
 # ----------------------------------------------------------------------
-def summarize(state: AgentState) -> AgentState:
+def _build_summary_messages(state: AgentState) -> list[Any]:
     """
-    汇总节点（链路终点）。
+    构造 summarize 节点的 LLM 消息（确定性，不调 LLM）。
 
-    输入：state["filtered_jobs"] + state["profile"] + state["query"]。
-    输出：state["skill_gap"]（确定性计算）+ state["final_report"]（LLM 生成）。
-    调 LLM：是。先用规则算技能差距，再把"岗位+画像+差距"打包给 LLM 写报告。
-    长度控制：只把相似度前 10 的岗位塞进 prompt，避免上下文过长拖慢/超 token。
+    把「计算技能差距 + 岗位/画像/差距打包成 prompt」抽出来，供一次性
+    `summarize` 与流式 `summarize_stream` 共用，避免两处重复 prompt 逻辑。
     """
     jobs = state["filtered_jobs"]
     profile = state["profile"]
@@ -469,12 +467,41 @@ def summarize(state: AgentState) -> AgentState:
         f"# 技能差距统计（这批岗位反复出现但用户 profile 还没掌握的技能）\n"
         f"{json.dumps(gap[:10], ensure_ascii=False)}\n"
     )
+    return [SystemMessage(content=SUMMARIZE_SYSTEM), HumanMessage(content=user)]
 
+
+def summarize(state: AgentState) -> AgentState:
+    """
+    汇总节点（链路终点，一次性生成）。
+
+    输入：state["filtered_jobs"] + state["profile"] + state["query"]。
+    输出：state["skill_gap"]（确定性计算）+ state["final_report"]（LLM 生成）。
+    调 LLM：是。先用规则算技能差距，再把"岗位+画像+差距"打包给 LLM 写报告。
+    长度控制：只把相似度前 10 的岗位塞进 prompt，避免上下文过长拖慢/超 token。
+    """
     llm = _llm()
-    msgs = [SystemMessage(content=SUMMARIZE_SYSTEM), HumanMessage(content=user)]
-    resp = llm.invoke(msgs)
+    resp = llm.invoke(_build_summary_messages(state))
     state["final_report"] = (
         resp.content if isinstance(resp.content, str) else str(resp.content)
     )
     _trace(state, f"[summarize] 报告生成完毕，{len(state['final_report'])} 字")
     return state
+
+
+def summarize_stream(state: AgentState):
+    """
+    汇总节点的**流式**版本：边调用 LLM 边 yield token，避免前端白等。
+
+    Yields:
+        str —— 报告片段（delta），可直接 push 给 SSE content 事件。
+    完成后 state["final_report"] 写入完整报告字符串。
+    """
+    report_parts: list[str] = []
+    llm = _llm()
+    for chunk in llm.stream(_build_summary_messages(state)):
+        delta = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+        if delta:
+            report_parts.append(delta)
+            yield delta
+    state["final_report"] = "".join(report_parts)
+    _trace(state, f"[summarize] 报告流式生成完毕，{len(state['final_report'])} 字")

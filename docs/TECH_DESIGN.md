@@ -27,7 +27,7 @@
 | 数据采集 | `Playwright` `connect_over_cdp` | 接管真实 Chrome 绕开 Boss 风控 |
 | 对外服务 | `FastAPI`（含 SSE）+ `FastMCP`（stdio） | Web UI / API 与 MCP 工具生态 |
 | 存储 | `MySQL`（final_results、agent_runs） | 岗位语料 + 运行记录 |
-| 前端 | 原生 HTML/CSS/JS（单页，无框架） | 暗色主题，含 master-detail 岗位库 |
+| 前端 | React 19 + Vite + TypeScript + Tailwind CSS v4 + Zustand | 统一求职助手单页（SSE 真流式对话 + Agent 思考步骤可视化），含岗位库 / 技能报表 |
 
 ---
 

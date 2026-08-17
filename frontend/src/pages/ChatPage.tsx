@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { chatApi, resumeApi, jobsApi, reportApi } from '../api';
+import { chatApi, resumeApi, jobsApi, reportApi, conversationsApi } from '../api';
 import { useChatStore, useConversationStore } from '../stores';
 import { Sidebar } from '../components/Sidebar';
-import type { ChatMode, InterviewSubMode, UnifiedMessage, JobItem, MatchResult, FileAttachment } from '../types';
+import type { ChatMode, InterviewSubMode, UnifiedMessage, JobItem, MatchResult, FileAttachment, SearchResult, MessageIntent } from '../types';
 
 /* ============================================================
  * 线性图标（统一描边，随 currentColor 着色，替代 emoji）
@@ -68,22 +68,12 @@ const IconCompass = (p: IconProps) => (
   <svg {...S(p)}><circle cx="12" cy="12" r="9" /><path d="m15.5 8.5-2 5-5 2 2-5 5-2Z" /></svg>
 );
 
-const MODE_ICON: Record<ChatMode, (p: IconProps) => JSX.Element> = {
-  assistant: IconAssistant,
-  interviewer: IconInterviewer,
-};
+// ===== 求职助手场景 =====
+const ASSISTANT_CONFIG = { label: '求职助手', desc: '找岗位、匹配简历、诊断短板、模拟面试', accent: 'text-indigo-600' };
 
-// ===== 模式配置 =====
-const MODE_CONFIG: Record<ChatMode, { label: string; desc: string; accent: string }> = {
-  assistant: { label: '求职助手', desc: '找岗位、匹配简历、诊断短板', accent: 'text-indigo-600' },
-  interviewer: { label: '面试官', desc: '模拟真实面试，查漏补缺', accent: 'text-violet-600' },
-};
-
-const SUBMODE_CONFIG: Record<InterviewSubMode, { label: string; icon: (p: IconProps) => JSX.Element; needsContext: 'resume' | 'jd' | 'skills' | 'none'; hint: string }> = {
-  resume: { label: '简历面试', icon: IconResume, needsContext: 'resume', hint: '基于你的简历深挖经历' },
-  jd: { label: 'JD 面试', icon: IconClipboard, needsContext: 'jd', hint: '围绕具体岗位要求提问' },
-  project: { label: '项目拷问', icon: IconProject, needsContext: 'none', hint: '对技术细节步步追问' },
-  knowledge: { label: '知识点', icon: IconBook, needsContext: 'skills', hint: '系统性考核知识盲区' },
+const INTERVIEW_SCENARIO_CONFIG: Record<'jd' | 'knowledge', { label: string; icon: (p: IconProps) => JSX.Element; hint: string }> = {
+  jd: { label: 'JD 面试', icon: IconClipboard, hint: '围绕具体岗位要求提问' },
+  knowledge: { label: '知识点测试', icon: IconBook, hint: '系统性考核知识盲区' },
 };
 
 // 意图标签：中性描边 + 小色点，不再用饱和彩色 pill
@@ -96,12 +86,14 @@ const INTENT_LABELS: Record<string, { text: string; dot: string }> = {
   chat: { text: '对话', dot: 'bg-stone-400' },
 };
 
-// 示例开场白（空状态引导，点击即发送）
-const SUGGESTIONS: { icon: (p: IconProps) => JSX.Element; text: string; mode: ChatMode }[] = [
-  { icon: IconCompass, text: '帮我找杭州的 Agent 开发岗位', mode: 'assistant' },
-  { icon: IconStethoscope, text: '诊断一下我的简历，指出短板', mode: 'assistant' },
-  { icon: IconInterviewer, text: '用我的简历模拟一场后端面试', mode: 'interviewer' },
-  { icon: IconBolt, text: '我简历和这些岗位匹配度如何？', mode: 'assistant' },
+// 快捷入口（空状态引导）
+const QUICK_STARTS: { icon: (p: IconProps) => JSX.Element; text: string; action: 'send' | 'resume' | 'diagnose' | 'match' | 'jd' | 'knowledge' }[] = [
+  { icon: IconCompass, text: '帮我找杭州的 Agent 开发岗位', action: 'send' },
+  { icon: IconStethoscope, text: '诊断一下我的简历，指出短板', action: 'diagnose' },
+  { icon: IconBolt, text: '我简历和这些岗位匹配度如何？', action: 'match' },
+  { icon: IconResume, text: '针对我的简历来一场面试', action: 'resume' },
+  { icon: IconClipboard, text: '针对一个岗位 JD 模拟面试', action: 'jd' },
+  { icon: IconBook, text: '来一轮知识点测验', action: 'knowledge' },
 ];
 
 export function ChatPage() {
@@ -122,13 +114,21 @@ export function ChatPage() {
     setJdText,
     setSelectedSkillTopic,
     addMessage,
+    setMessages,
     setStreaming,
     appendStreamContent,
     finalizeStream,
     clearMessages,
   } = useChatStore();
 
-  const { createConversation, updateConversationTitle, updateConversationMeta, activeConversationId } = useConversationStore();
+  const {
+    createConversation,
+    updateConversationTitle,
+    updateConversationMeta,
+    setConversations,
+    setActiveConversation,
+    activeConversationId,
+  } = useConversationStore();
 
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -143,6 +143,12 @@ export function ChatPage() {
   const [showSkillPicker, setShowSkillPicker] = useState(false);
   const [skillList, setSkillList] = useState<{ name: string; count: number }[]>([]);
   const [skillLoading, setSkillLoading] = useState(false);
+
+  // 当前激活的求职助手场景：默认无，选中面试类卡片后切换
+  const [activeScenario, setActiveScenario] = useState<'resume' | 'jd' | 'knowledge' | null>(null);
+
+  // Agent 思考步骤（后端每完成一个节点推送一条 step 事件，前端逐步展示）
+  const [steps, setSteps] = useState<{ label: string; status: 'running' | 'done'; detail?: string }[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -160,11 +166,74 @@ export function ChatPage() {
     }
   }, [input]);
 
+  // 页面加载时从后端拉取会话历史
+  useEffect(() => {
+    let cancelled = false;
+    conversationsApi.list().then((res) => {
+      if (cancelled) return;
+      const mapped: Conversation[] = res.conversations.map((c) => {
+        const [modePart, subPart] = c.mode.split(':');
+        const mode: ChatMode = modePart === 'interviewer' || modePart === 'interview' ? 'interviewer' : 'assistant';
+        const interviewSubMode: InterviewSubMode = (subPart as InterviewSubMode) || 'resume';
+        return {
+          id: c.conversation_id,
+          title: c.title,
+          mode,
+          interviewSubMode,
+          createdAt: c.created_at * 1000,
+          updatedAt: c.updated_at * 1000,
+          messageCount: 0,
+          persisted: true,
+        };
+      });
+      setConversations(mapped);
+    }).catch((err) => {
+      console.error('加载会话历史失败:', err);
+    });
+    return () => { cancelled = true; };
+  }, [setConversations]);
+
   const handleNewChat = useCallback(() => {
     clearMessages();
-    createConversation(mode, interviewSubMode);
+    setActiveScenario(null);
+    setInterviewSubMode('resume');
+    createConversation('assistant');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, interviewSubMode, clearMessages, createConversation]);
+  }, [clearMessages, createConversation, setActiveScenario, setInterviewSubMode]);
+
+  const handleSelectConversation = useCallback(async (id: string) => {
+    const { conversations } = useConversationStore.getState();
+    const conv = conversations.find((c) => c.id === id);
+    if (!conv) return;
+
+    // 统一显示为求职助手，但保留场景子状态
+    setMode('assistant');
+    const restoredScenario: typeof activeScenario =
+      conv.interviewSubMode === 'jd' || conv.interviewSubMode === 'knowledge' || conv.interviewSubMode === 'resume'
+        ? conv.interviewSubMode
+        : null;
+    setActiveScenario(restoredScenario);
+    if (conv.interviewSubMode) {
+      setInterviewSubMode(conv.interviewSubMode);
+    }
+    setSessionId(id);
+    setActiveConversation(id);
+
+    try {
+      const res = await conversationsApi.messages(id);
+      const restored: UnifiedMessage[] = res.messages.map((m, idx) => ({
+        id: `${m.role}-${m.created_at}-${idx}`,
+        role: m.role,
+        content: m.content,
+        timestamp: m.created_at * 1000,
+      }));
+      setMessages(restored);
+    } catch (err) {
+      console.error('加载会话消息失败:', err);
+      setMessages([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setMode, setInterviewSubMode, setSessionId, setMessages]);
 
   // 欢迎消息（仅首次）
   useEffect(() => {
@@ -172,16 +241,27 @@ export function ChatPage() {
       addMessage({
         id: 'welcome',
         role: 'assistant',
-        content:
-          mode === 'assistant'
-            ? '我是你的求职助手。可以帮你搜索匹配的岗位、用简历匹配机会，或诊断简历短板。想从哪开始？'
-            : '我是你的面试官。选好面试模式后，我们可以开始一场真实的模拟面试。',
+        content: '我是你的求职助手。可以帮你搜索匹配的岗位、匹配简历、诊断短板，或针对 JD / 知识点模拟面试。想从哪开始？',
         intent: 'chat',
         timestamp: Date.now(),
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, []);
+
+  // 未上传简历却触发依赖简历的能力时：只提示，不直接弹文件框（避免粗暴打开系统选择器）
+  const promptResumeUpload = useCallback(() => {
+    addMessage({
+      id: `hint-resume-${Date.now()}`,
+      role: 'assistant',
+      content:
+        '请先上传你的 PDF 简历，我才能帮你诊断短板、做匹配度分析或模拟面试。\n\n' +
+        '点对话框右下角的 📎 按钮选择文件即可，上传成功后直接把需求告诉我就行。',
+      intent: 'chat',
+      timestamp: Date.now(),
+    });
+    setInput('');
+  }, [addMessage, setInput]);
 
   const handleFileUpload = useCallback(async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -253,30 +333,40 @@ export function ChatPage() {
     if (skillList.length === 0) loadSkillList();
   };
 
-  const handleSend = async (preset?: string) => {
+  const handleSend = async (
+    preset?: string,
+    ctx?: {
+      scenario?: 'resume' | 'jd' | 'knowledge' | null;
+      skillTopic?: string;
+      jdJob?: JobItem;
+    }
+  ) => {
     const message = (preset ?? input).trim();
     if (!message || sending || isStreaming) return;
 
-    if (mode === 'interviewer') {
-      const cfg = SUBMODE_CONFIG[interviewSubMode];
-      if (cfg.needsContext === 'resume' && !resume?.content) {
-        alert('请先上传简历 PDF');
-        return;
-      }
-      if (cfg.needsContext === 'jd' && !jdText && !selectedJobForInterview) {
-        openJobPicker();
-        return;
-      }
-      if (cfg.needsContext === 'skills' && !selectedSkillTopic) {
-        openSkillPicker();
-        return;
-      }
+    // 允许调用方直接传入本次要用的场景上下文，避免 setState 异步导致读到旧值
+    const scenario = ctx?.scenario ?? activeScenario;
+    const skillTopic = ctx?.skillTopic ?? selectedSkillTopic;
+    const jdJob = ctx?.jdJob ?? selectedJobForInterview;
+    const jdTextValue = ctx?.jdJob?.description ?? jdText;
+
+    if (scenario === 'resume' && !resume?.content) {
+      promptResumeUpload();
+      return;
+    }
+    if (scenario === 'jd' && !jdTextValue && !jdJob) {
+      openJobPicker();
+      return;
+    }
+    if (scenario === 'knowledge' && !skillTopic) {
+      openSkillPicker();
+      return;
     }
 
     setInput('');
     setSending(true);
 
-    if (messages.length <= 1 && activeConversationId) {
+    if (messages.length <= 2 && activeConversationId) {
       const title = message.length > 20 ? message.slice(0, 20) + '…' : message;
       updateConversationTitle(activeConversationId, title);
     }
@@ -288,57 +378,90 @@ export function ChatPage() {
       timestamp: Date.now(),
     });
 
-    setStreaming(true);
+    setStreaming(true, '');
 
     try {
-      const response = await chatApi.unified({
+      let reply = '';
+      let intent: MessageIntent | undefined;
+      let jobCards: JobItem[] | undefined;
+      let matchResults: MatchResult[] | undefined;
+      let sources: SearchResult[] | undefined;
+      let replySessionId: string | undefined;
+      setSteps([]);
+
+      const isInterviewScenario = scenario === 'resume' || scenario === 'jd' || scenario === 'knowledge';
+      const stream = chatApi.unifiedStream({
         message,
-        mode,
-        session_id: sessionId || undefined,
+        mode: isInterviewScenario ? 'interviewer' : 'assistant',
+        // 面试场景必须用后端返回的 8 位 interview session_id 续接；助手场景用前端会话 id
+        session_id: (isInterviewScenario ? (sessionId || activeConversationId) : (activeConversationId || sessionId)) || undefined,
         resume_text: resume?.content || undefined,
-        jd_text: jdText || selectedJobForInterview?.description || undefined,
-        interview_submode: mode === 'interviewer' ? interviewSubMode : undefined,
-        skill_topic: selectedSkillTopic || undefined,
+        jd_text: jdTextValue || jdJob?.description || undefined,
+        interview_submode: isInterviewScenario ? scenario as InterviewSubMode : undefined,
+        skill_topic: skillTopic || undefined,
       });
 
-      if (response.session_id) setSessionId(response.session_id);
-
-      let jobCards: JobItem[] | undefined;
-      if (response.job_cards && response.job_cards.length > 0) {
-        jobCards = response.job_cards.map((raw: any, i: number) => ({
-          id: `card-${i}-${raw.title?.slice(0, 8) || ''}`,
-          title: raw.title || '',
-          company: raw.brand || '',
-          salary: raw.salary_desc || '',
-          city: raw.city || '',
-          experience: raw.experience || '',
-          education: raw.degree || '',
-          skills: raw.skills || [],
-          description: raw.post_description || '',
-          url: raw.url || '',
-        }));
+      for await (const event of stream) {
+        if (event.type === 'intent') {
+          intent = event.intent;
+        } else if (event.type === 'step') {
+          setSteps((prev) => {
+            const idx = prev.findIndex((s) => s.label === event.label);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = { label: event.label, status: event.status, detail: event.detail };
+              return next;
+            }
+            return [...prev, { label: event.label, status: event.status, detail: event.detail }];
+          });
+        } else if (event.type === 'content') {
+          reply += event.delta;
+          appendStreamContent(event.delta);
+        } else if (event.type === 'done') {
+          if (event.data.session_id) replySessionId = event.data.session_id;
+          const rawCards = event.data.job_cards || event.data.filtered_jobs;
+          if (rawCards && rawCards.length > 0) {
+            jobCards = rawCards.map((raw: any, i: number) => ({
+              id: `card-${i}-${raw.title?.slice(0, 8) || ''}`,
+              title: raw.title || '',
+              company: raw.brand || '',
+              salary: raw.salary_desc || '',
+              city: raw.city || '',
+              experience: raw.experience || '',
+              education: raw.degree || '',
+              skills: raw.skills || [],
+              description: raw.post_description || '',
+              url: raw.url || '',
+            }));
+          }
+          if (event.data.match_results) matchResults = event.data.match_results;
+          if (event.data.sources) sources = event.data.sources;
+        } else if (event.type === 'error') {
+          throw new Error(event.message);
+        }
       }
 
-      finalizeStream(response.intent, {
-        sources: response.sources,
-        jobCards,
-        matchResults: response.match_results,
-      });
+      if (replySessionId) setSessionId(replySessionId);
 
-      setStreaming(true, response.reply);
-      setTimeout(() => {
-        finalizeStream(response.intent, {
-          sources: response.sources,
-          jobCards,
-          matchResults: response.match_results,
-        });
-      }, 100);
+      setStreaming(false);
+      addMessage({
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: reply,
+        intent,
+        timestamp: Date.now(),
+        sources,
+        jobCards,
+        matchResults,
+        steps: [...steps],
+      });
 
       if (activeConversationId) {
         updateConversationMeta(activeConversationId, { messageCount: messages.length + 2 });
       }
     } catch (err) {
       setStreaming(false);
+      setSteps([]);
       addMessage({
         id: `error-${Date.now()}`,
         role: 'assistant',
@@ -362,7 +485,7 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full bg-stone-50" style={{ height: 'calc(100vh - 64px)' }}>
-      {sidebarOpen && <Sidebar onNewChat={handleNewChat} />}
+      {sidebarOpen && <Sidebar onNewChat={handleNewChat} onSelectConversation={handleSelectConversation} />}
 
       <main className="flex-1 flex flex-col min-w-0">
         {/* 顶部细栏 */}
@@ -376,13 +499,10 @@ export function ChatPage() {
           </button>
 
           <div className="flex items-center gap-2 min-w-0">
-            {(() => {
-              const Icon = MODE_ICON[mode];
-              return <Icon size={18} className={MODE_CONFIG[mode].accent} />;
-            })()}
-            <span className="text-[15px] font-semibold text-stone-800 tracking-tight">{MODE_CONFIG[mode].label}</span>
-            {mode === 'interviewer' && (
-              <span className="text-[13px] text-stone-400">/ {SUBMODE_CONFIG[interviewSubMode].label}</span>
+            <IconAssistant size={18} className={ASSISTANT_CONFIG.accent} />
+            <span className="text-[15px] font-semibold text-stone-800 tracking-tight">{ASSISTANT_CONFIG.label}</span>
+            {activeScenario && (
+              <span className="text-[13px] text-stone-400">/ {INTERVIEW_SCENARIO_CONFIG[activeScenario].label}</span>
             )}
           </div>
 
@@ -410,30 +530,51 @@ export function ChatPage() {
         <div className="flex-1 overflow-y-auto">
           {!hasRealMessages ? (
             <WelcomeScreen
-              mode={mode}
-              interviewSubMode={interviewSubMode}
-              onModeChange={(m) => { setMode(m); clearMessages(); }}
-              onSubModeChange={(sub) => { setInterviewSubMode(sub); clearMessages(); }}
+              activeScenario={activeScenario}
+              onActivateResume={() => { setActiveScenario('resume'); setInterviewSubMode('resume'); }}
+              onActivateJD={() => { setActiveScenario('jd'); setInterviewSubMode('jd'); openJobPicker(); }}
+              onActivateKnowledge={() => { setActiveScenario('knowledge'); setInterviewSubMode('knowledge'); openSkillPicker(); }}
               onResumeUpload={() => fileInputRef.current?.click()}
+              onResumeRequired={() => promptResumeUpload()}
               onJDPick={openJobPicker}
               onSkillPick={openSkillPicker}
-              onSuggestion={(text) => { setMode('assistant'); handleSend(text); }}
+              onSuggestion={(text) => { setActiveScenario(null); setInterviewSubMode('resume'); handleSend(text); }}
               resumeLoaded={!!resume}
               jdSet={!!jdText || !!selectedJobForInterview}
-              skillSet={!!selectedSkillTopic}
+              selectedSkillTopic={selectedSkillTopic}
             />
           ) : (
             <div className="mx-auto max-w-3xl px-4 py-6 space-y-5">
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} currentMode={mode} />
+                <MessageBubble key={msg.id} message={msg} />
               ))}
+
+              {isStreaming && !streamingContent && steps.length > 0 && (
+                <div className="msg-in flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-white border border-stone-200 flex items-center justify-center text-indigo-600 flex-shrink-0">
+                    <IconAssistant size={17} />
+                  </div>
+                  <div className="bg-white border border-stone-200 rounded-2xl rounded-tl-md px-4 py-3 max-w-[78%]">
+                    <ThinkingSteps steps={steps} />
+                  </div>
+                </div>
+              )}
 
               {isStreaming && streamingContent && (
                 <div className="msg-in flex gap-3">
                   <div className="w-8 h-8 rounded-full bg-white border border-stone-200 flex items-center justify-center text-indigo-600 flex-shrink-0">
-                    {(() => { const Icon = MODE_ICON[mode]; return <Icon size={17} />; })()}
+                    <IconAssistant size={17} />
                   </div>
                   <div className="bg-white border border-stone-200 rounded-2xl rounded-tl-md px-4 py-3 max-w-[78%]">
+                    {steps.length > 0 && (
+                      <details className="mb-2.5 -mt-0.5 group" open>
+                        <summary className="cursor-pointer text-[12px] text-stone-400 hover:text-stone-600 select-none list-none flex items-center gap-1.5">
+                          <svg width="11" height="11" viewBox="0 0 24 24" className="transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 6l6 6-6 6"/></svg>
+                          Agent 思考过程（{steps.filter((s) => s.status === 'done').length}/{steps.length} 步）
+                        </summary>
+                        <ThinkingSteps steps={steps} className="mt-2" />
+                      </details>
+                    )}
                     <div className="text-[14px] text-stone-700 whitespace-pre-wrap leading-relaxed">
                       {streamingContent}
                       <span className="caret text-indigo-500" />
@@ -445,7 +586,7 @@ export function ChatPage() {
               {sending && !isStreaming && (
                 <div className="flex gap-3">
                   <div className="w-8 h-8 rounded-full bg-white border border-stone-200 flex items-center justify-center text-indigo-600 flex-shrink-0">
-                    {(() => { const Icon = MODE_ICON[mode]; return <Icon size={17} />; })()}
+                    <IconAssistant size={17} />
                   </div>
                   <div className="bg-white border border-stone-200 rounded-2xl rounded-tl-md px-4 py-3.5 flex items-center">
                     <span className="flex gap-1">
@@ -471,7 +612,7 @@ export function ChatPage() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={mode === 'assistant' ? '说说你想找的岗位，或粘贴简历…' : '回答面试官的问题…'}
+                placeholder='说说你想找的岗位，或粘贴简历，也可以直接开始面试…'
                 className="flex-1 text-[14px] text-stone-800 bg-transparent px-2 py-2 resize-none min-h-[40px] max-h-[140px] placeholder:text-stone-400 focus:outline-none leading-relaxed"
                 rows={1}
               />
@@ -519,6 +660,7 @@ export function ChatPage() {
             setJdText(job.description || '');
             setShowJobPicker(false);
             addMessage({ id: `jd-${Date.now()}`, role: 'user', content: `已选择岗位：${job.title}（${job.company}）`, timestamp: Date.now() });
+            handleSend(`请针对这个岗位 JD 开始面试：${job.title}`, { scenario: 'jd', jdJob: job });
           }}
           onClose={() => setShowJobPicker(false)}
           onRefresh={loadJobList}
@@ -535,6 +677,7 @@ export function ChatPage() {
             setSelectedSkillTopic(skillName);
             setShowSkillPicker(false);
             addMessage({ id: `skill-${Date.now()}`, role: 'user', content: `已选择知识领域：${skillName}`, timestamp: Date.now() });
+            handleSend(`请针对 ${skillName} 知识点开始面试`, { scenario: 'knowledge', skillTopic: skillName });
           }}
           onClose={() => setShowSkillPicker(false)}
           onRefresh={loadSkillList}
@@ -548,126 +691,102 @@ export function ChatPage() {
  * 欢迎界面：克制引导 + 示例开场白，去除大 emoji 与胶囊按钮
  * ========================================================== */
 function WelcomeScreen({
-  mode,
-  interviewSubMode,
-  onModeChange,
-  onSubModeChange,
+  activeScenario,
+  onActivateResume,
+  onActivateJD,
+  onActivateKnowledge,
   onResumeUpload,
+  onResumeRequired,
   onJDPick,
   onSkillPick,
   onSuggestion,
   resumeLoaded,
   jdSet,
-  skillSet,
+  selectedSkillTopic,
 }: {
-  mode: ChatMode;
-  interviewSubMode: InterviewSubMode;
-  onModeChange: (m: ChatMode) => void;
-  onSubModeChange: (s: InterviewSubMode) => void;
+  activeScenario: 'resume' | 'jd' | 'knowledge' | null;
+  onActivateResume: () => void;
+  onActivateJD: () => void;
+  onActivateKnowledge: () => void;
   onResumeUpload: () => void;
+  onResumeRequired: () => void;
   onJDPick: () => void;
   onSkillPick: () => void;
   onSuggestion: (text: string) => void;
   resumeLoaded: boolean;
   jdSet: boolean;
-  skillSet: boolean;
+  selectedSkillTopic: string | null;
 }) {
   return (
     <div className="h-full flex flex-col items-center justify-center px-6 py-10 fade-in">
       <div className="w-full max-w-2xl">
-        {/* 模式分段控件（细滑块 + 白高亮） */}
-        <div className="flex justify-center mb-7">
-          <div className="relative inline-flex p-1 bg-stone-100 rounded-full">
-            {(Object.keys(MODE_CONFIG) as ChatMode[]).map((m) => {
-              const cfg = MODE_CONFIG[m];
-              const active = mode === m;
-              return (
-                <button
-                  key={m}
-                  onClick={() => onModeChange(m)}
-                  className={`relative z-10 inline-flex items-center gap-1.5 px-5 py-2 rounded-full text-[13px] font-medium transition-colors duration-200 ${
-                    active ? 'text-stone-900' : 'text-stone-500 hover:text-stone-700'
-                  }`}
-                >
-                  {active && <span className="absolute inset-0 -z-10 bg-white rounded-full shadow-sm ring-1 ring-stone-900/5" />}
-                  {(() => { const Icon = MODE_ICON[m]; return <Icon size={16} className={active ? cfg.accent : ''} />; })()}
-                  {cfg.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
         {/* 标题区 */}
         <div className="text-center mb-8">
-          <h1 className="text-[26px] font-semibold text-stone-900 tracking-tight">
-            {mode === 'assistant' ? '让求职这件事更轻一点' : '来一场真实的模拟面试'}
-          </h1>
-          <p className="text-[14px] text-stone-500 mt-2">{MODE_CONFIG[mode].desc}</p>
+          <h1 className="text-[26px] font-semibold text-stone-900 tracking-tight">让求职这件事更轻一点</h1>
+          <p className="text-[14px] text-stone-500 mt-2">{ASSISTANT_CONFIG.desc}</p>
         </div>
 
-        {/* 面试官子模式卡片 */}
-        {mode === 'interviewer' ? (
-          <div className="grid grid-cols-2 gap-3 mb-7">
-            {(Object.keys(SUBMODE_CONFIG) as InterviewSubMode[]).map((s) => {
-              const cfg = SUBMODE_CONFIG[s];
-              const active = interviewSubMode === s;
-              const Icon = cfg.icon;
-              return (
-                <button
-                  key={s}
-                  onClick={() => onSubModeChange(s)}
-                  className={`text-left px-4 py-3.5 rounded-xl border transition-all duration-200 ${
-                    active ? 'bg-white border-indigo-300 shadow-sm' : 'bg-white/60 border-stone-200 hover:border-stone-300 hover:bg-white'
-                  }`}
-                >
-                  <div className={`inline-flex items-center justify-center w-9 h-9 rounded-lg mb-2.5 ${active ? 'bg-indigo-50 text-indigo-600' : 'bg-stone-100 text-stone-500'}`}>
-                    <Icon size={18} />
-                  </div>
-                  <div className="text-[14px] font-medium text-stone-800">{cfg.label}</div>
-                  <div className="text-[12px] text-stone-400 mt-0.5">{cfg.hint}</div>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          /* 助手模式：示例开场白 */
-          <div className="grid grid-cols-2 gap-3 mb-7">
-            {SUGGESTIONS.map((s, i) => {
-              const Icon = s.icon;
-              return (
-                <button
-                  key={i}
-                  onClick={() => onSuggestion(s.text)}
-                  className="group text-left px-4 py-3.5 rounded-xl bg-white border border-stone-200 hover:border-indigo-300 hover:shadow-sm transition-all duration-200"
-                >
-                  <div className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-stone-100 text-stone-500 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors mb-2.5">
-                    <Icon size={16} />
-                  </div>
-                  <div className="text-[13px] text-stone-700 leading-snug">{s.text}</div>
-                </button>
-              );
-            })}
-          </div>
-        )}
+        {/* 快捷入口：求职 + 面试 */}
+        <div className="grid grid-cols-2 gap-3 mb-7">
+          {QUICK_STARTS.map((s, i) => {
+            const Icon = s.icon;
+            const isScenario = s.action === 'resume' || s.action === 'jd' || s.action === 'knowledge';
+            const active = activeScenario === s.action;
+            return (
+              <button
+                key={i}
+                onClick={() => {
+                  // 依赖简历的场景（简历面试 / 诊断 / 匹配）：没上传简历则先要求上传，不发送
+                  const needsResume = s.action === 'resume' || s.action === 'diagnose' || s.action === 'match';
+                  if (needsResume && !resumeLoaded) {
+                    onResumeRequired();
+                    return;
+                  }
+                  if (s.action === 'resume') onActivateResume();
+                  else if (s.action === 'jd') onActivateJD();
+                  else if (s.action === 'knowledge') onActivateKnowledge();
+                  else onSuggestion(s.text);
+                }}
+                className={`group text-left px-4 py-3.5 rounded-xl border transition-all duration-200 ${
+                  active ? 'bg-white border-indigo-300 shadow-sm' : 'bg-white border-stone-200 hover:border-indigo-300 hover:shadow-sm'
+                }`}
+              >
+                <div className={`inline-flex items-center justify-center w-8 h-8 rounded-lg mb-2.5 transition-colors ${isScenario ? 'bg-violet-50 text-violet-600 group-hover:bg-violet-100' : 'bg-stone-100 text-stone-500 group-hover:bg-indigo-50 group-hover:text-indigo-600'}`}>
+                  <Icon size={16} />
+                </div>
+                <div className="text-[13px] text-stone-700 leading-snug">{s.text}</div>
+              </button>
+            );
+          })}
+        </div>
 
-        {/* 上下文状态（面试官模式） */}
-        {mode === 'interviewer' && (
-          <div className="flex flex-wrap items-center justify-center gap-2.5">
+        {/* 上下文状态：只显示当前场景需要的操作 */}
+        <div className="flex flex-wrap items-center justify-center gap-2.5">
+          {(activeScenario === null || activeScenario === 'resume') && (
             <ContextChip
               icon={IconResume}
               label={resumeLoaded ? '简历已就绪' : '上传简历'}
               ready={resumeLoaded}
               onClick={onResumeUpload}
             />
-            {interviewSubMode === 'jd' && (
-              <ContextChip icon={IconClipboard} label={jdSet ? 'JD 已设置' : '选择岗位 JD'} ready={jdSet} onClick={onJDPick} />
-            )}
-            {interviewSubMode === 'knowledge' && (
-              <ContextChip icon={IconBook} label={skillSet ? `领域：${skillSet}` : '选择知识领域'} ready={!!skillSet} onClick={onSkillPick} />
-            )}
-          </div>
-        )}
+          )}
+          {activeScenario === 'jd' && (
+            <ContextChip
+              icon={IconClipboard}
+              label={jdSet ? 'JD 已设置' : '选择岗位 JD'}
+              ready={jdSet}
+              onClick={onJDPick}
+            />
+          )}
+          {activeScenario === 'knowledge' && (
+            <ContextChip
+              icon={IconBook}
+              label={selectedSkillTopic ? `领域：${selectedSkillTopic}` : '选择知识领域'}
+              ready={!!selectedSkillTopic}
+              onClick={onSkillPick}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -882,7 +1001,37 @@ function SkillPickerModal({
 /* ============================================================
  * 消息气泡
  * ========================================================== */
-function MessageBubble({ message, currentMode }: { message: UnifiedMessage; currentMode: ChatMode }) {
+function ThinkingSteps({
+  steps,
+  className = '',
+}: {
+  steps: { label: string; status: 'running' | 'done'; detail?: string }[];
+  className?: string;
+}) {
+  return (
+    <div className={`space-y-1.5 ${className}`}>
+      {steps.map((s, i) => (
+        <div key={i} className="flex items-start gap-2 text-[12px] leading-snug">
+          {s.status === 'running' ? (
+            <span className="mt-0.5 w-3.5 h-3.5 rounded-full border-2 border-indigo-300 border-t-indigo-600 animate-spin flex-shrink-0" />
+          ) : (
+            <span className="mt-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0">
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 12l5 5 9-11" />
+              </svg>
+            </span>
+          )}
+          <div className="min-w-0">
+            <span className={s.status === 'done' ? 'text-stone-600 font-medium' : 'text-stone-500'}>{s.label}</span>
+            {s.detail && <span className="text-stone-400 ml-1.5">{s.detail}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: UnifiedMessage }) {
   const isUser = message.role === 'user';
 
   if (isUser) {
@@ -897,12 +1046,11 @@ function MessageBubble({ message, currentMode }: { message: UnifiedMessage; curr
   }
 
   const intentLabel = message.intent ? INTENT_LABELS[message.intent] : null;
-  const Icon = MODE_ICON[currentMode];
 
   return (
     <div className="msg-in flex gap-3">
       <div className="w-8 h-8 rounded-full bg-white border border-stone-200 flex items-center justify-center text-indigo-600 flex-shrink-0">
-        <Icon size={17} />
+        <IconAssistant size={17} />
       </div>
       <div className="max-w-[78%] space-y-2.5">
         {intentLabel && (
@@ -910,6 +1058,15 @@ function MessageBubble({ message, currentMode }: { message: UnifiedMessage; curr
             <span className={`w-1.5 h-1.5 rounded-full ${intentLabel.dot}`} />
             {intentLabel.text}
           </span>
+        )}
+        {message.steps && message.steps.length > 0 && (
+          <details className="bg-white/60 border border-stone-200 rounded-xl px-3.5 py-2.5">
+            <summary className="cursor-pointer text-[12px] text-stone-400 hover:text-stone-600 select-none list-none flex items-center gap-1.5">
+              <svg width="11" height="11" viewBox="0 0 24 24" className="transition-transform" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 6l6 6-6 6" /></svg>
+              Agent 思考过程（{message.steps.length} 步）
+            </summary>
+            <ThinkingSteps steps={message.steps} className="mt-2" />
+          </details>
         )}
         <div className="bg-white border border-stone-200 rounded-2xl rounded-tl-md px-4 py-3">
           <div className="text-[14px] text-stone-700 whitespace-pre-wrap leading-relaxed">{message.content}</div>

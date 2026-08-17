@@ -120,6 +120,7 @@ interface ChatState {
   setJdText: (text: string) => void;
   setSelectedSkillTopic: (topic: string | null) => void;
   addMessage: (msg: UnifiedMessage) => void;
+  setMessages: (messages: UnifiedMessage[]) => void;
   setStreaming: (streaming: boolean, content?: string) => void;
   appendStreamContent: (chunk: string) => void;
   finalizeStream: (intent?: UnifiedMessage['intent'], extra?: Partial<UnifiedMessage>) => void;
@@ -163,6 +164,8 @@ export const useChatStore = create<ChatState>((set) => ({
 
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
 
+  setMessages: (messages) => set({ messages }),
+
   setStreaming: (streaming, content = '') => set({ isStreaming: streaming, streamingContent: content }),
 
   appendStreamContent: (chunk) => set((s) => ({ streamingContent: s.streamingContent + chunk })),
@@ -201,13 +204,16 @@ export const useChatStore = create<ChatState>((set) => ({
 interface ConversationState {
   conversations: Conversation[];
   activeConversationId: string | null;
+  loading: boolean;
 
   // 操作
   createConversation: (mode: ChatMode, subMode?: InterviewSubMode) => string;
+  setConversations: (conversations: Conversation[]) => void;
   setActiveConversation: (id: string | null) => void;
   updateConversationTitle: (id: string, title: string) => void;
   updateConversationMeta: (id: string, meta: Partial<Pick<Conversation, 'messageCount' | 'updatedAt' | 'interviewSubMode'>>) => void;
   deleteConversation: (id: string) => void;
+  setLoading: (loading: boolean) => void;
 }
 
 let conversationIdCounter = 0;
@@ -215,6 +221,7 @@ let conversationIdCounter = 0;
 export const useConversationStore = create<ConversationState>((set, get) => ({
   conversations: [],
   activeConversationId: null,
+  loading: false,
 
   createConversation: (mode, subMode) => {
     const id = `conv-${Date.now()}-${++conversationIdCounter}`;
@@ -235,6 +242,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     }));
     return id;
   },
+
+  setConversations: (conversations) => set({ conversations }),
 
   setActiveConversation: (id) => set({ activeConversationId: id }),
 
@@ -257,4 +266,6 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       conversations: s.conversations.filter((c) => c.id !== id),
       activeConversationId: s.activeConversationId === id ? null : s.activeConversationId,
     })),
+
+  setLoading: (loading) => set({ loading }),
 }));

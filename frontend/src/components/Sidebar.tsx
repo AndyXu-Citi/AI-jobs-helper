@@ -13,9 +13,10 @@ const IconInterviewer = (p: { size?: number; className?: string }) => (<svg {...
 
 interface SidebarProps {
   onNewChat: () => void;
+  onSelectConversation?: (id: string) => void;
 }
 
-export function Sidebar({ onNewChat }: SidebarProps) {
+export function Sidebar({ onNewChat, onSelectConversation }: SidebarProps) {
   const { conversations, activeConversationId, setActiveConversation, deleteConversation } = useConversationStore();
   const { mode: currentMode } = useChatStore();
 
@@ -46,7 +47,10 @@ export function Sidebar({ onNewChat }: SidebarProps) {
                 conv={conv}
                 active={conv.id === activeConversationId}
                 currentMode={currentMode}
-                onClick={() => setActiveConversation(conv.id)}
+                onClick={() => {
+                  setActiveConversation(conv.id);
+                  onSelectConversation?.(conv.id);
+                }}
                 onDelete={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
               />
             ))}
@@ -64,10 +68,10 @@ export function Sidebar({ onNewChat }: SidebarProps) {
         )}
       </div>
 
-      {/* Footer - 预留记忆模块入口 */}
+      {/* Footer - 记忆模块入口 */}
       <div className="p-3 border-t border-border-light">
         <div className="text-xs text-text-muted text-center">
-          对话记录本地存储 · 后续支持云端同步
+          对话记录已同步至后端
         </div>
       </div>
     </aside>
@@ -88,7 +92,7 @@ function ConversationItem({
   onClick: () => void;
   onDelete: (e: React.MouseEvent) => void;
 }) {
-  const modeIcon = conv.mode === 'assistant' ? <IconAssistant size={15} /> : <IconInterviewer size={15} />;
+  const modeIcon = <IconAssistant size={15} />;
   const timeLabel = formatTime(conv.updatedAt);
 
   return (

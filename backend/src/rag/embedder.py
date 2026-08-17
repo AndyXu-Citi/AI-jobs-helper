@@ -19,7 +19,15 @@ from typing import Iterable
 # 国内 HuggingFace 镜像（setdefault 确保用户可自行覆盖）
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
+# Windows + sentence-transformers 常见并发/多线程问题防御：
+# 1. 禁用 tokenizer 多进程，避免 [Errno 22] Invalid argument / fork 类错误
+# 2. 限制 OpenMP/MKL 线程数，避免 CPU 后端竞争
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import requests
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -107,13 +115,20 @@ class HuggingFaceEmbedder:
 
     首次 embed_one 时才会下载/加载 BAAI/bge-m3（约 2.3GB 权重，
     国内建议开 VPN 或设 HF_ENDPOINT=https://hf-mirror.com）。
+
+    线程安全：模型加载与 encode 均受类锁保护，避免 Windows 上多线程并发
+    调用 sentence-transformers 出现 [Errno 22] Invalid argument 等问题。
     """
 
     _model = None  # 进程内单例，避免重复加载
+    # 用 RLock（可重入）而非 Lock：embed_one 持锁期间会调用 _get_model，
+    # 后者也要拿同一把锁做懒加载；非重入 Lock 会自死锁。
+    _lock = threading.RLock()
 
     def __init__(self, model: str = "BAAI/bge-m3", device: str | None = None):
         self.model_name = model
-        self.device = device
+        # 默认锁死在 CPU；Windows 上 GPU/CUDA 路径常因驱动/编译问题更不稳定
+        self.device = device or "cpu"
 
     @property
     def dim(self) -> int:
@@ -121,12 +136,15 @@ class HuggingFaceEmbedder:
 
     def _get_model(self):
         if HuggingFaceEmbedder._model is None:
-            from sentence_transformers import SentenceTransformer
+            with HuggingFaceEmbedder._lock:
+                if HuggingFaceEmbedder._model is None:
+                    from sentence_transformers import SentenceTransformer
 
-            model = SentenceTransformer(self.model_name)
-            if self.device:
-                model = model.to(self.device)
-            HuggingFaceEmbedder._model = model
+                    HuggingFaceEmbedder._model = SentenceTransformer(
+                        self.model_name,
+                        device=self.device,
+                        trust_remote_code=True,
+                    )
         return HuggingFaceEmbedder._model
 
     def embed_one(self, text: str) -> list[float]:
@@ -134,7 +152,13 @@ class HuggingFaceEmbedder:
             raise ValueError("embed_one: text is empty")
 
         try:
-            vec = self._get_model().encode(text)
+            with HuggingFaceEmbedder._lock:
+                vec = self._get_model().encode(
+                    text,
+                    convert_to_numpy=False,
+                    normalize_embeddings=False,
+                    show_progress_bar=False,
+                )
         except Exception as e:
             raise RuntimeError(
                 f"huggingface embed failed for model={self.model_name}: {e}"
@@ -144,6 +168,10 @@ class HuggingFaceEmbedder:
             vec = vec.tolist()
         else:
             vec = list(vec)
+
+        # 处理 list of list 的边界情况（batch size 1 时部分版本返回 [[...]]）
+        if vec and isinstance(vec, list) and isinstance(vec[0], list):
+            vec = vec[0]
 
         if not vec or not isinstance(vec, list):
             raise RuntimeError(f"huggingface returned bad payload: {type(vec)}")

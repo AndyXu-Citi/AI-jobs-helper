@@ -50,7 +50,7 @@ import threading
 # 记忆模块：MySQL 会话原文持久化 + Milvus 长期语义记忆
 from src.db_conversation import (
     ensure_tables, create_conversation, touch_conversation, save_message,
-    get_history, get_conversation, count_messages, list_interviews,
+    get_history, get_conversation, count_messages, list_conversations, list_interviews,
 )
 from src.rag.memory_store import MemoryStore
 
@@ -93,14 +93,17 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-def _mmr_select(store, query_vec, candidates: list[dict], top_k: int = 5,
-                lambda_: float = 0.7) -> list[dict]:
-    """MMR 去冗余：在相关性与多样性间权衡，避免召回高度相似的重复片段。"""
+async def _mmr_select(store, query_vec, candidates: list[dict], top_k: int = 5,
+                      lambda_: float = 0.7) -> list[dict]:
+    """MMR 去冗余：在相关性与多样性间权衡，避免召回高度相似的重复片段。
+
+    内部对每条候选做 embedding，统一丢到 worker 线程执行，避免阻塞事件循环。
+    """
     if not candidates:
         return []
     vecs: dict[int, list[float]] = {}
     for c in candidates:
-        v = store.embed(c["content"])
+        v = await asyncio.to_thread(store.embed, c["content"])
         if v:
             vecs[id(c)] = v
     pool = [c for c in candidates if id(c) in vecs]
@@ -120,8 +123,8 @@ def _mmr_select(store, query_vec, candidates: list[dict], top_k: int = 5,
     return selected
 
 
-def _recall_context(user_id: str, message: str, conversation_id: str | None = None,
-                    top_k: int = 5) -> str:
+async def _recall_context(user_id: str, message: str, conversation_id: str | None = None,
+                          top_k: int = 5) -> str:
     """跨会话语义召回该用户历史记忆，经 MMR 去冗余 + 时间衰减 + 相关性阈值后返回。
 
     - 多轮 query：若提供 conversation_id，用最近 3 条 user 消息拼接作为检索 query。
@@ -141,7 +144,7 @@ def _recall_context(user_id: str, message: str, conversation_id: str | None = No
                 query_text = "\n".join(user_turns[-3:])
         except Exception:
             pass
-    vec = store.embed(query_text)
+    vec = await asyncio.to_thread(store.embed, query_text)
     if not vec:
         return ""
     # 召回更多候选，再经 MMR / 阈值 / 时间衰减筛选
@@ -166,7 +169,7 @@ def _recall_context(user_id: str, message: str, conversation_id: str | None = No
         c["eff"] = c["score"] * (1.0 / (1.0 + age_days / 30.0))
     normal.sort(key=lambda x: x["eff"], reverse=True)
 
-    selected = _mmr_select(store, vec, normal, top_k=top_k)
+    selected = await _mmr_select(store, vec, normal, top_k=top_k)
 
     lines = []
     for s in summaries[:2]:
@@ -342,14 +345,20 @@ def _load_embedder():
 
 @asynccontextmanager
 async def lifespan(app: "FastAPI"):
-    """服务生命周期：启动时可选预加载 bge-m3 模型，避免第一次搜索卡顿。"""
+    """服务生命周期：可选在后台线程预加载 bge-m3 模型。
+
+    预加载放在 worker 线程（不 await），启动不阻塞；模型加载完成前若收到
+    语义检索请求，对应 embedding 调用也会落到 worker 线程，事件循环始终空闲，
+    因此 /api/report、/api/jobs 等页面不会被拖垮。
+    """
     if not _PRELOAD_EMBEDDER:
-        app_logger.info("PRELOAD_EMBEDDER=false，跳过启动时预加载，首次请求时懒加载")
+        app_logger.info("PRELOAD_EMBEDDER=false，跳过启动时预加载，首次请求时懒加载（仍在 worker 线程，不阻塞事件循环）")
     else:
-        app_logger.info("预加载 bge-m3 embedding 模型...")
+        app_logger.info("后台预加载 bge-m3 embedding 模型（不阻塞启动）...")
         try:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, _load_embedder)
+            # 不 await：让加载在后台线程跑，启动秒开
+            loop.run_in_executor(None, _load_embedder)
         except Exception as e:
             app_logger.warning(f"预加载模型失败，首次搜索时会自动加载: {e}")
     yield
@@ -433,9 +442,9 @@ async def chat(req: ChatRequest):
 @app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest):
     """SSE 流式输出：每个节点执行完实时推送 trace，最后推送完整结果。"""
-    def generate():
+    async def generate():
         try:
-            for event in find_jobs_stream(req.query):
+            async for event in find_jobs_stream_async(req.query):
                 if event["type"] == "trace":
                     lines = event["lines"]
                     # 逐条推送新 trace
@@ -848,7 +857,7 @@ async def match_resume(req: MatchRequest):
         from src.rag.embedder import HuggingFaceEmbedder
         import math
 
-        similar = vector_search_jobs(resume, top_k=5)
+        similar = await asyncio.to_thread(vector_search_jobs, resume, top_k=5)
         for j in similar:
             similar_jobs_raw.append({
                 "title": j.title, "brand": j.brand, "city": j.city,
@@ -860,8 +869,8 @@ async def match_resume(req: MatchRequest):
 
         # 简历向量 vs JD 向量 → 余弦相似度
         embedder = HuggingFaceEmbedder()
-        rv = embedder.embed_one(resume)
-        jv = embedder.embed_one(jd_text)
+        rv = await asyncio.to_thread(embedder.embed_one, resume)
+        jv = await asyncio.to_thread(embedder.embed_one, jd_text)
         dot = sum(a * b for a, b in zip(rv, jv))
         nr = math.sqrt(sum(a * a for a in rv))
         nj = math.sqrt(sum(a * a for a in jv))
@@ -928,7 +937,7 @@ async def match_rank(req: ChatRequest):
 
     try:
         from src.agent.tools import vector_search_jobs
-        jobs = vector_search_jobs(resume, top_k=20)
+        jobs = await asyncio.to_thread(vector_search_jobs, resume, top_k=20)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"检索失败：{e}"})
 
@@ -1181,7 +1190,7 @@ async def chat_interview(req: InterviewChatRequest):
     try:
         llm = _llm()
         # 动态召回候选人历史相关背景，注入本轮（跨面试/跨会话共享技术水位）
-        recalled = _recall_context(DEFAULT_USER_ID, msg, conversation_id=sid, top_k=3)
+        recalled = await _recall_context(DEFAULT_USER_ID, msg, conversation_id=sid, top_k=3)
         system = sess["system"]
         if recalled:
             system = (system
@@ -1294,6 +1303,7 @@ class UnifiedChatRequest(BaseModel):
     resume_text: str = ""              # 已上传的简历文本
     jd_text: str = ""                  # 面试用 JD
     interview_submode: str = "resume"  # jd | resume | project | knowledge
+    skill_topic: str = ""              # 知识点测试选中的领域（knowledge 子模式首条消息用）
 
 # 求职助手系统提示词（含礼貌拒绝规则）
 _ASSISTANT_SYSTEM = """你是「AI 求职助手」，帮助用户搜索岗位、分析简历、匹配职位。
@@ -1391,7 +1401,7 @@ async def unified_chat(req: UnifiedChatRequest):
         elif submode == "project":
             content = message  # 项目描述直接用用户输入
         elif submode == "knowledge":
-            content = message  # 知识点直接用用户输入
+            content = req.skill_topic or message  # 知识点优先用选中的领域，否则用用户输入
 
         if not content and submode in ("resume", "jd"):
             field = "简历" if submode == "resume" else "JD"
@@ -1425,7 +1435,7 @@ async def unified_chat(req: UnifiedChatRequest):
             system += "\n\n【用户长期画像（对话自动沉淀，仅供参考）】\n" + lt
 
         # 纳入统一记忆：召回候选人历史相关背景，辅助判断技术水位（跨面试/跨会话共享）
-        recalled = _recall_context(user_id, message, conversation_id=conversation_id, top_k=3)
+        recalled = await _recall_context(user_id, message, conversation_id=conversation_id, top_k=3)
         if recalled:
             system = (
                 system
@@ -1473,7 +1483,7 @@ async def unified_chat(req: UnifiedChatRequest):
             # 复用 match_rank 逻辑
             fake_req = ChatRequest(query=req.resume_text[:2000])
             # 召回历史记忆，注入匹配上下文
-            recalled = _recall_context(user_id, message)
+            recalled = await _recall_context(user_id, message)
             result = await _do_match_rank(req.resume_text, message, recalled=recalled)
             _persist_and_remember(conversation_id, user_id, message, result.get("reply", ""), mode)
             return result
@@ -1484,7 +1494,7 @@ async def unified_chat(req: UnifiedChatRequest):
     if intent == "diagnose" and has_resume:
         try:
             llm = _llm()
-            recalled = _recall_context(user_id, message, conversation_id=conversation_id)
+            recalled = await _recall_context(user_id, message, conversation_id=conversation_id)
             if lt:
                 recalled = (recalled + "\n\n" + lt) if recalled else lt
             recalled_block = ""
@@ -1520,11 +1530,11 @@ async def unified_chat(req: UnifiedChatRequest):
             "filtered_jobs": [
                 {
                     "title": j.title,
-                    "brand": j.brand_name,
+                    "brand": j.brand,
                     "city": j.city,
                     "salary_desc": j.salary_desc,
-                    "experience": j.experience_name,
-                    "degree": j.degree_name,
+                    "experience": j.experience,
+                    "degree": j.degree,
                     "skills": j.skills or [],
                     "post_description": j.post_description or "",
                     "url": j.url,
@@ -1537,6 +1547,404 @@ async def unified_chat(req: UnifiedChatRequest):
         return reply_payload
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"搜索失败: {e}"})
+
+
+# ------------------------------------------------------------------
+# 统一对话入口（SSE 流式）
+# ------------------------------------------------------------------
+
+def _sse_event(data: dict) -> str:
+    """把 JSON 对象包装成 SSE data: 行。"""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _sse_step(label: str, status: str = "running", detail: str = "") -> str:
+    """推送 Agent 思考步骤（running/done）。"""
+    return _sse_event({"type": "step", "label": label, "status": status, "detail": detail})
+
+
+async def find_jobs_stream_async(query: str):
+    """把同步生成器 find_jobs_stream 搬到 worker 线程执行，事件循环不被阻塞。
+
+    这样语义检索（首次加载 bge-m3 需几十秒）期间，/api/report、/api/jobs
+    等不依赖 embedding 的页面仍能正常响应，不会一起卡在 loading。
+    """
+    loop = asyncio.get_event_loop()
+    queue: "asyncio.Queue" = asyncio.Queue()
+
+    def _producer():
+        try:
+            for event in find_jobs_stream(query):
+                asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+        except Exception as e:
+            asyncio.run_coroutine_threadsafe(queue.put({"type": "error", "message": str(e)}), loop)
+        finally:
+            asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+    loop.run_in_executor(None, _producer)
+    while True:
+        event = await queue.get()
+        if event is None:
+            break
+        yield event
+
+
+@app.post("/api/chat/unified/stream")
+async def unified_chat_stream(req: UnifiedChatRequest):
+    """统一对话入口的 SSE 流式版本。
+
+    事件格式：
+      data: {"type":"intent","intent":"search|match|diagnose|interview|chat"}\n\n
+      data: {"type":"trace","content":"..."}\n\n          （仅 search 路径会推送 trace）
+      data: {"type":"content","delta":"..."}\n\n      data: {"type":"done","data":{...}}\n\n
+      data: {"type":"error","message":"..."}\n\n
+    """
+    async def event_generator():
+        message = (req.message or "").strip()
+        if not message:
+            yield _sse_event({"type": "error", "message": "请输入消息"})
+            return
+
+        mode = req.mode
+        _ensure_memory_ready()
+        user_id = DEFAULT_USER_ID
+        try:
+            from src.agent.long_term_memory import load_longterm_md
+            lt = load_longterm_md()
+        except Exception:
+            lt = ""
+
+        conversation_id = req.session_id or uuid.uuid4().hex[:12]
+        try:
+            create_conversation(conversation_id, user_id=user_id,
+                                title=message[:30] or "新对话", mode=mode)
+        except Exception:
+            pass
+
+        # ==================== 面试官模式 ====================
+        if mode == "interviewer":
+            submode = req.interview_submode or "resume"
+            yield _sse_event({"type": "intent", "intent": "interview"})
+
+            sess = _recover_interview_session(req.session_id) if req.session_id else None
+            if sess:
+                try:
+                    conversation_id = req.session_id
+                    sess["history"].append({"role": "user", "content": message})
+                    sess["round"] += 1
+
+                    yield _sse_step("继续面试对话", "running", f"第 {sess['round']} 轮")
+                    messages = [SystemMessage(content=sess["system"])]
+                    for h in sess["history"]:
+                        if h["role"] == "user":
+                            messages.append(HumanMessage(content=h["content"]))
+                        else:
+                            from langchain_core.messages import AIMessage
+                            messages.append(AIMessage(content=h["content"]))
+                    yield _sse_step("继续面试对话", "done", f"第 {sess['round']} 轮")
+
+                    yield _sse_step("生成面试官回复", "running")
+                    llm = _llm()
+                    reply = ""
+                    for chunk in llm.stream(messages):
+                        delta = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+                        if delta:
+                            reply += delta
+                            yield _sse_event({"type": "content", "delta": delta})
+                    yield _sse_step("生成面试官回复", "done")
+
+                    sess["history"].append({"role": "assistant", "content": reply})
+                    _persist_and_remember(conversation_id, user_id, message, reply, mode)
+                    yield _sse_event({
+                        "type": "done",
+                        "data": {
+                            "reply": reply,
+                            "intent": "interview",
+                            "session_id": req.session_id,
+                            "round": sess["round"],
+                        },
+                    })
+                except Exception as e:
+                    yield _sse_event({"type": "error", "message": f"LLM 调用失败: {e}"})
+                return
+
+            # 首条消息 → 启动面试
+            content = ""
+            if submode == "resume":
+                content = req.resume_text or ""
+            elif submode == "jd":
+                content = req.jd_text or ""
+            elif submode == "project":
+                content = message
+            elif submode == "knowledge":
+                content = req.skill_topic or message
+
+            if not content and submode in ("resume", "jd"):
+                field = "简历" if submode == "resume" else "JD"
+                yield _sse_event({"type": "error", "message": f"请先上传{field}或粘贴{field}文本"})
+                return
+
+            if submode not in _INTERVIEW_SYSTEM_PROMPTS:
+                yield _sse_event({"type": "error", "message": f"不支持的面试模式: {submode}"})
+                return
+
+            session_id = str(uuid.uuid4())[:8]
+            conversation_id = session_id
+            try:
+                create_conversation(conversation_id, user_id=user_id,
+                                    title=message[:30] or "新对话", mode=f"interview:{submode}")
+            except Exception:
+                pass
+
+            mode_labels = {
+                "resume": "以下是候选人的【简历全文】",
+                "project": "以下是候选人参与的【项目描述】",
+                "knowledge": "以下是需要考核的【知识点范围】",
+                "jd": "以下是目标岗位的【JD 描述】",
+            }
+            initial_user = f"{mode_labels.get(submode, '素材')}\n\n{content}"
+
+            yield _sse_step("准备面试素材", "running", f"模式：{submode}")
+            system = _INTERVIEW_SYSTEM_PROMPTS[submode]
+            if lt:
+                system += "\n\n【用户长期画像（对话自动沉淀，仅供参考）】\n" + lt
+            yield _sse_step("准备面试素材", "done", f"模式：{submode}")
+
+            yield _sse_step("检索历史记忆", "running")
+            recalled = await _recall_context(user_id, message, conversation_id=conversation_id, top_k=3)
+            if recalled:
+                system = (
+                    system
+                    + "\n\n【候选人历史背景（来自过往对话记忆，仅供参考，可辅助判断技术水位）】\n"
+                    + recalled
+                )
+                yield _sse_step("检索历史记忆", "done", f"召回 {len(recalled)} 字背景")
+            else:
+                yield _sse_step("检索历史记忆", "done", "暂无相关历史")
+
+            try:
+                yield _sse_step("生成第一个面试问题", "running")
+                llm = _llm()
+                reply = ""
+                for chunk in llm.stream([
+                    SystemMessage(content=system),
+                    HumanMessage(content=initial_user + "\n\n请开始面试，提出你的第一个问题。"),
+                ]):
+                    delta = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+                    if delta:
+                        reply += delta
+                        yield _sse_event({"type": "content", "delta": delta})
+                yield _sse_step("生成第一个面试问题", "done")
+            except Exception as e:
+                yield _sse_event({"type": "error", "message": f"LLM 调用失败: {e}"})
+                return
+
+            _interview_sessions[session_id] = {
+                "mode": submode,
+                "mode_name": {"resume": "简历深挖", "project": "项目拷问", "knowledge": "知识点考核", "jd": "指定JD面试"}.get(submode, submode),
+                "system": system,
+                "history": [
+                    {"role": "user", "content": initial_user},
+                    {"role": "assistant", "content": reply},
+                ],
+                "created_at": time.time(),
+                "round": 1,
+            }
+            _persist_and_remember(conversation_id, user_id, message, reply, mode)
+            yield _sse_event({
+                "type": "done",
+                "data": {
+                    "reply": reply,
+                    "intent": "interview",
+                    "session_id": session_id,
+                    "round": 1,
+                },
+            })
+            return
+
+        # ==================== 求职助手模式 ====================
+        has_resume = bool(req.resume_text and req.resume_text.strip())
+        intent = _detect_assistant_intent(message, has_resume)
+        yield _sse_event({"type": "intent", "intent": intent})
+
+        # --- 需要简历但缺失：提示上传，避免误走搜索 ---
+        if intent in ("match", "diagnose") and not has_resume:
+            tip = (
+                "我需要先读一下你的简历才能做匹配 / 诊断哦。\n\n"
+                "请先上传一份 PDF 简历（对话框旁的回形针按钮，或在下方点「上传简历」），"
+                "上传成功后告诉我「诊断简历」或「和这些岗位匹配度如何」，我再帮你分析。"
+            )
+            for char in tip:
+                yield _sse_event({"type": "content", "delta": char})
+            _persist_and_remember(conversation_id, user_id, message, tip, mode)
+            yield _sse_event({"type": "done", "data": {"reply": tip, "intent": intent}})
+            return
+
+        # --- 简历匹配 ---
+        if intent == "match" and has_resume:
+            try:
+                from src.agent.tools import vector_search_jobs
+
+                yield _sse_step("向量检索匹配岗位", "running")
+                jobs = await asyncio.to_thread(vector_search_jobs, req.resume_text, top_k=10)
+                if not jobs:
+                    tip = "未找到匹配岗位，请先采集岗位数据。"
+                    for char in tip:
+                        yield _sse_event({"type": "content", "delta": char})
+                    yield _sse_event({"type": "done", "data": {"reply": tip, "intent": "match", "match_results": []}})
+                    return
+                yield _sse_step("向量检索匹配岗位", "done", f"召回 {len(jobs)} 条相关岗位")
+
+                yield _sse_step("深度匹配 Top 岗位", "running")
+                recalled = await _recall_context(user_id, message)
+                match_results: list[dict] = []
+                llm = _llm()
+                for job in jobs[:5]:
+                    try:
+                        jd_text = job.post_description or ""
+                        if not jd_text:
+                            continue
+                        prompt = f"""请分析以下简历与岗位的匹配度，返回 JSON：
+{{"match_score": 0-100, "matched_skills": ["技能1"...], "missing_skills": ["技能1"...], "gap_analysis": "简述", "suggestions": ["建议1"...]}}
+{('【候选人历史记忆，可辅助判断】\n' + recalled + '\n') if recalled else ''}
+简历：
+{req.resume_text[:1500]}
+
+岗位：{job.title} @ {job.brand}
+JD：
+{jd_text[:1000]}"""
+                        resp = llm.invoke([HumanMessage(content=prompt)])
+                        data = _extract_json(resp.content if isinstance(resp.content, str) else str(resp.content))
+                        if isinstance(data, dict):
+                            match_results.append({
+                                "job_title": job.title,
+                                "company": job.brand,
+                                "match_score": data.get("match_score", 0),
+                                "matched_skills": data.get("matched_skills", []),
+                                "missing_skills": data.get("missing_skills", []),
+                                "gap_analysis": data.get("gap_analysis", ""),
+                                "suggestions": data.get("suggestions", []),
+                            })
+                    except Exception:
+                        continue
+                match_results.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+                yield _sse_step("深度匹配 Top 岗位", "done", f"完成 {len(match_results)} 个岗位分析")
+
+                yield _sse_step("生成匹配总结", "running")
+                summary_prompt = f"""请根据以下简历与岗位的匹配结果，生成一段自然语言总结。
+要求：
+1. 先给出总体结论（匹配度最高的岗位和整体水平）
+2. 然后逐条分析每个岗位
+3. 最后给出提升建议
+4. 不要返回 JSON，直接输出 Markdown 格式文本
+
+简历：
+{req.resume_text[:1000]}
+
+匹配结果：
+{json.dumps(match_results, ensure_ascii=False, indent=2)}"""
+                reply = ""
+                for chunk in llm.stream([
+                    SystemMessage(content=_ASSISTANT_SYSTEM),
+                    HumanMessage(content=summary_prompt),
+                ]):
+                    delta = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+                    if delta:
+                        reply += delta
+                        yield _sse_event({"type": "content", "delta": delta})
+                yield _sse_step("生成匹配总结", "done")
+
+                _persist_and_remember(conversation_id, user_id, message, reply, mode)
+                yield _sse_event({
+                    "type": "done",
+                    "data": {"reply": reply, "intent": "match", "match_results": match_results},
+                })
+            except Exception as e:
+                yield _sse_event({"type": "error", "message": f"匹配失败: {e}"})
+            return
+
+        # --- 简历诊断 ---
+        if intent == "diagnose" and has_resume:
+            try:
+                yield _sse_step("解析诊断意图", "done", "简历诊断")
+                yield _sse_step("检索历史记忆", "running")
+                llm = _llm()
+                recalled = await _recall_context(user_id, message, conversation_id=conversation_id)
+                if lt:
+                    recalled = (recalled + "\n\n" + lt) if recalled else lt
+                recalled_block = ""
+                if recalled:
+                    recalled_block = f"\n\n【用户历史记忆（仅供参考，可结合判断）】\n{recalled}\n"
+                    yield _sse_step("检索历史记忆", "done", f"召回 {len(recalled)} 字背景")
+                else:
+                    yield _sse_step("检索历史记忆", "done", "暂无相关历史")
+
+                diagnose_prompt = f"""请诊断以下简历，从以下维度评估并给出改进建议：
+1. 整体印象（1-10分）
+2. 亮点
+3. 不足
+4. 具体改进建议（分条列出）
+{recalled_block}
+简历内容：
+{req.resume_text[:3000]}"""
+                if lt:
+                    diagnose_prompt += f"\n\n【用户长期画像（自动沉淀，可结合判断）】\n{lt}"
+
+                yield _sse_step("生成诊断报告", "running")
+                reply = ""
+                for chunk in llm.stream([
+                    SystemMessage(content=_ASSISTANT_SYSTEM),
+                    HumanMessage(content=diagnose_prompt),
+                ]):
+                    delta = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+                    if delta:
+                        reply += delta
+                        yield _sse_event({"type": "content", "delta": delta})
+                yield _sse_step("生成诊断报告", "done")
+                _persist_and_remember(conversation_id, user_id, message, reply, mode)
+                yield _sse_event({"type": "done", "data": {"reply": reply, "intent": "diagnose"}})
+            except Exception as e:
+                yield _sse_event({"type": "error", "message": f"诊断失败: {e}"})
+            return
+
+        # --- 岗位搜索（默认）---
+        try:
+            async for event in find_jobs_stream_async(message):
+                if event["type"] == "step":
+                    # Agent 思考步骤：解析意图 / 检索 / 过滤 / 反思 / 生成报告
+                    yield _sse_event(event)
+                elif event["type"] == "content":
+                    # 报告 token（真流式，已由 graph 逐段产生）
+                    yield _sse_event(event)
+                elif event["type"] == "done":
+                    result = event["result"]
+                    reply_payload = {
+                        "reply": result.final_report,
+                        "intent": "search",
+                        "filtered_jobs": [
+                            {
+                                "title": j.title,
+                                "brand": j.brand,
+                                "city": j.city,
+                                "salary_desc": j.salary_desc,
+                                "experience": j.experience,
+                                "degree": j.degree,
+                                "skills": j.skills or [],
+                                "post_description": j.post_description or "",
+                                "url": j.url,
+                            }
+                            for j in (result.filtered_jobs or [])
+                        ],
+                        "skill_gap": result.skill_gap,
+                    }
+                    _persist_and_remember(conversation_id, user_id, message, result.final_report, mode)
+                    yield _sse_event({"type": "done", "data": reply_payload})
+                elif event["type"] == "error":
+                    yield _sse_event({"type": "error", "message": event["message"]})
+        except Exception as e:
+            yield _sse_event({"type": "error", "message": f"搜索失败: {e}"})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ------------------------------------------------------------------
@@ -1569,7 +1977,7 @@ async def _do_match_rank(resume_text: str, query: str, recalled: str = ""):
 
     # 用简历文本做向量检索
     try:
-        jobs = vector_search_jobs(resume_text, top_k=10)
+        jobs = await asyncio.to_thread(vector_search_jobs, resume_text, top_k=10)
     except Exception as e:
         return {"reply": f"检索失败：{e}", "intent": "match", "match_results": []}
 

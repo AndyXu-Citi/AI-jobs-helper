@@ -3,6 +3,7 @@ import type {
   UnifiedChatRequest,
   UnifiedChatResponse,
   MatchResult,
+  MessageIntent,
 } from '../types';
 
 // 后端实际返回的报表数据格式（与后端 app.py 对齐）
@@ -74,14 +75,60 @@ export async function* streamChat(query: string): AsyncGenerator<string> {
   }
 }
 
+export type StreamEvent =
+  | { type: 'intent'; intent: MessageIntent }
+  | { type: 'step'; label: string; status: 'running' | 'done'; detail?: string }
+  | { type: 'content'; delta: string }
+  | { type: 'done'; data: Partial<UnifiedChatResponse> & { reply: string } }
+  | { type: 'error'; message: string };
+
 // ===== 统一对话 API（核心入口）=====
 export const chatApi = {
-  /** 统一对话：自动意图识别 + 路由分发 */
+  /** 统一对话：自动意图识别 + 路由分发（非流式，兼容旧调用） */
   unified: (req: UnifiedChatRequest): Promise<UnifiedChatResponse> =>
     request<UnifiedChatResponse>('/chat/unified', {
       method: 'POST',
       body: JSON.stringify(req),
     }),
+
+  /** 统一对话 SSE 流式版本 */
+  unifiedStream: async function* (req: UnifiedChatRequest): AsyncGenerator<StreamEvent> {
+    const res = await fetch(`${BASE}/chat/unified/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+
+    if (!res.ok || !res.body) {
+      const err = await res.json().catch(() => ({ message: res.statusText }));
+      throw new Error((err as any).detail || (err as any).message || (err as any).error || `HTTP ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed === '' || trimmed === '[DONE]') continue;
+        if (trimmed.startsWith('data: ')) {
+          try {
+            yield JSON.parse(trimmed.slice(6)) as StreamEvent;
+          } catch {
+            yield { type: 'content', delta: trimmed.slice(6) } as StreamEvent;
+          }
+        }
+      }
+    }
+  },
 };
 
 // ===== 简历上传 API =====
@@ -148,6 +195,29 @@ export const jobsApi = {
 
   get: (id: string): Promise<JobItem> =>
     request<JobItem>(`/jobs/${id}`),
+};
+
+// ===== 会话历史 =====
+export interface BackendConversation {
+  conversation_id: string;
+  title: string;
+  mode: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface BackendMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: number;
+}
+
+export const conversationsApi = {
+  list: (): Promise<{ conversations: BackendConversation[] }> =>
+    request<{ conversations: BackendConversation[] }>('/conversations'),
+
+  messages: (conversationId: string): Promise<{ conversation_id: string; messages: BackendMessage[] }> =>
+    request<{ conversation_id: string; messages: BackendMessage[] }>(`/conversations/${conversationId}/messages`),
 };
 
 // ===== 技能报表（返回后端原始格式）=====

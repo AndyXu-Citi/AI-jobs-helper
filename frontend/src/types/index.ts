@@ -64,6 +64,8 @@ export interface UnifiedMessage {
   matchResults?: MatchResult[];
   /** 附件 */
   attachments?: FileAttachment[];
+  /** Agent 思考过程（每步做了什么），用于 UI 展示 */
+  steps?: { label: string; status: 'running' | 'done'; detail?: string }[];
 }
 
 /** 统一对话请求 */
